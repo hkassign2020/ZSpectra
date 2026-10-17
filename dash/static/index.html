@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Z-SPECTRA v2 · Blind mesh</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">ZS</div>
+    <div>
+      <p class="eyebrow">CROSS-BANK FRAUD DEMONSTRATOR</p>
+      <h1>Z-SPECTRA <span>v2</span></h1>
+    </div>
+    <div class="topbar-note"><span class="live-dot"></span><span id="connection">Connecting to mesh</span></div>
+  </header>
+
+  <main>
+    <section class="hero panel">
+      <div>
+        <p class="eyebrow">BLIND FEATURES · BOUNDARY AUDIT</p>
+        <h2>Trace the cascade.<br><em>Keep bank data sealed.</em></h2>
+        <p class="intro">Raw events stay in bank services. The shared mesh receives pseudonymous identifiers and allowlisted features, then returns a hold recommendation for bank review.</p>
+      </div>
+      <div class="actions">
+        <button class="primary" id="launch">Launch heist</button>
+        <button class="quiet" id="reset">Reset demo</button>
+        <p id="action-status" role="status"></p>
+      </div>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">BOUNDARY</p><h2>What crosses</h2></div>
+          <span class="pill">blind view</span>
+        </div>
+        <p class="muted">Recent bank-to-mesh messages, with pseudonymous IDs and sensor vectors.</p>
+        <div id="boundary-stream" class="stream empty">Waiting for bank events.</div>
+      </article>
+
+      <article class="panel decision-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">MESH DECISION</p><h2>Chain and evidence</h2></div>
+          <span id="alert-status" class="pill neutral">No alert</span>
+        </div>
+        <div id="decision" class="empty">Launch the scripted heist to inspect a live decision.</div>
+        <div class="subpanel">
+          <p class="eyebrow">LLM BRIEF <span id="llm-mode" class="mode"></span></p>
+          <div id="brief" class="brief muted">No brief available.</div>
+        </div>
+        <details class="subpanel">
+          <summary>Exact LLM prompt JSON</summary>
+          <pre id="prompt" class="code muted">No prompt sent.</pre>
+        </details>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel audit-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">BOUNDARY AUDIT</p><h2>Canary scanner</h2></div>
+          <span id="canary-status" class="pill good">No canary hit</span>
+        </div>
+        <dl class="metrics" id="audit-counters"></dl>
+        <div class="audit-actions">
+          <button class="secondary" id="negative-control">Run negative control</button>
+          <span id="negative-result" class="muted">Not run.</span>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">PLATFORM PROOF</p><h2>Observed host</h2></div>
+          <button class="icon-button" id="refresh-platform" aria-label="Refresh platform evidence">↻</button>
+        </div>
+        <pre id="platform-evidence" class="code muted">Collecting host evidence…</pre>
+      </article>
+    </section>
+
+    <section class="panel results-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">MEASURED EVALUATION</p><h2>Benchmark results</h2></div>
+        <span class="pill">results.json</span>
+      </div>
+      <pre id="results" class="code muted">No measured results file is available.</pre>
+    </section>
+    <footer>Demonstration with synthetic data. Pseudonymous identifiers remain linkable. A hold is a recommendation for operator review.</footer>
+  </main>
+</body>
+</html>

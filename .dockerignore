@@ -1,0 +1,10 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+models
+demo-data
+results.json
+tests
+*.log
