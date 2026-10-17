@@ -137,6 +137,8 @@ function drawAudit(audit = {}) {
     ["Messages scanned", "messages_scanned"],
     ["Bytes scanned", "bytes_scanned"],
     ["Canary hits", "canary_hits"],
+    ["Self-test scans", "self_test_messages"],
+    ["Self-test hits", "self_test_hits"],
     ["Validator blocks", "validator_blocks"],
   ]) {
     const box = document.createElement("div");
@@ -147,7 +149,7 @@ function drawAudit(audit = {}) {
   }
   const hitCount = Number(audit.canary_hits || 0);
   const canary = $("#canary-status");
-  canary.textContent = hitCount ? "Canary hit detected" : "No canary hit";
+  canary.textContent = hitCount ? "Canary hit in production traffic" : "No production canary hit";
   canary.className = hitCount ? "pill alert" : "pill good";
 }
 

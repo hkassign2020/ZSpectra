@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.run/
 models/*.pkl
 models/thresholds.json
 models/training.json

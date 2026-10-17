@@ -183,7 +183,7 @@ def main() -> None:
         port = int(os.environ.get("PORT", "8002"))
     elif bank == "C":
         port = int(os.environ.get("PORT", "8003"))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host=os.environ.get("BIND_HOST", "0.0.0.0"), port=port, threaded=True)
 
 
 if __name__ == "__main__":

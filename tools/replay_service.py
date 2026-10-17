@@ -123,7 +123,11 @@ def create_app(
 
 def main() -> None:
     app = create_app()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8081")), threaded=True)
+    app.run(
+        host=os.environ.get("BIND_HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "8081")),
+        threaded=True,
+    )
 
 
 if __name__ == "__main__":

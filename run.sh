@@ -6,9 +6,36 @@ cd "$ROOT_DIR"
 PYTHON_BIN=${PYTHON:-python3}
 PLATFORM=$(uname -m 2>/dev/null || true)
 NETWORK=zs-net
+RUNTIME_MODE=
 
 usage() {
   printf '%s\n' 'Usage: ./run.sh start|demo|replay|reset|status|eval|stop'
+  printf '%s\n' 'Set ZSPECTRA_MODE=auto|docker|process (default: auto; process mode is used when Docker is unavailable).'
+}
+
+select_runtime() {
+  requested=${ZSPECTRA_MODE:-auto}
+  case "$requested" in
+    docker)
+      command -v docker >/dev/null 2>&1 || { printf '%s\n' 'Docker CLI is not installed.' >&2; exit 2; }
+      docker info >/dev/null 2>&1 || { printf '%s\n' 'Docker daemon is unavailable.' >&2; exit 2; }
+      RUNTIME_MODE=docker
+      ;;
+    process)
+      RUNTIME_MODE=process
+      ;;
+    auto)
+      if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        RUNTIME_MODE=docker
+      else
+        RUNTIME_MODE=process
+      fi
+      ;;
+    *)
+      printf '%s\n' 'ZSPECTRA_MODE must be auto, docker, or process.' >&2
+      exit 2
+      ;;
+  esac
 }
 
 prepare() {
@@ -28,7 +55,7 @@ prepare() {
   if ! "$PYTHON_BIN" -m tools.prepare_demo --check \
        --output-dir "$ROOT_DIR/demo-data" --model-dir "$ROOT_DIR/models" >/dev/null 2>&1; then
     "$PYTHON_BIN" -m tools.prepare_demo \
-      --events "${DEMO_EVENTS:-60000}" \
+      --events "${DEMO_EVENTS:-20000}" \
       --output-dir "$ROOT_DIR/demo-data" \
       --model-dir "$ROOT_DIR/models"
   fi
@@ -50,6 +77,9 @@ build_images() {
 }
 
 start_dashboard() {
+  if [ "$RUNTIME_MODE" = process ]; then
+    return 0
+  fi
   docker rm -f zs-dash >/dev/null 2>&1 || true
   if [ -f "$ROOT_DIR/results.json" ]; then
     docker run -d --name zs-dash --network "$NETWORK" --network-alias dash --restart unless-stopped \
@@ -82,7 +112,15 @@ start() {
     printf '%s\n' 'Run this command on the target LinuxONE s390x host. Set ZSPECTRA_REQUIRE_S390X=0 only for a local development run.' >&2
     exit 2
   fi
+  select_runtime
+  "$PYTHON_BIN" "$ROOT_DIR/tools/linuxone_preflight.py"
   prepare
+  if [ "$RUNTIME_MODE" = process ]; then
+    "$PYTHON_BIN" -m tools.process_runner start
+    capture_platform
+    printf '%s\n' 'Z-SPECTRA services started in isolated-process mode. Open http://127.0.0.1:8080. Logs are under .run/logs/.'
+    return 0
+  fi
   build_images
   docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
 
@@ -94,7 +132,7 @@ start() {
     -e MODEL_FILE=/models/fraud_models.pkl \
     -e THRESHOLDS_FILE=/models/thresholds.json \
     -e CANARY_INDEX_FILE=/data/canary-index.json \
-    -e LLM_API_URL -e LLM_API_KEY \
+    -e LLM_API_URL -e LLM_API_KEY -e LLM_API_MODEL -e LLM_API_MODE \
     -e BANK_A_URL=http://bank-a:8001 -e BANK_B_URL=http://bank-b:8002 -e BANK_C_URL=http://bank-c:8003 \
     -v "$ROOT_DIR/models:/models:ro" \
     -v "$ROOT_DIR/demo-data/canary-index.json:/data/canary-index.json:ro" \
@@ -162,11 +200,15 @@ case "$command" in
     ;;
   eval)
     start
-    "$PYTHON_BIN" -m bench.bench
+    "$PYTHON_BIN" -m bench.bench \
+      --events "${DEMO_EVENTS:-20000}" \
+      --seeds "${EVAL_SEEDS:-3}" \
+      --live-repeats "${EVAL_LIVE_REPEATS:-1}"
     start_dashboard
     capture_platform
     ;;
   stop)
+    "$PYTHON_BIN" -m tools.process_runner stop >/dev/null 2>&1 || true
     for name in zs-bank-A zs-bank-B zs-bank-C zs-mesh zs-dash zs-replayer; do
       docker rm -f "$name" >/dev/null 2>&1 || true
     done

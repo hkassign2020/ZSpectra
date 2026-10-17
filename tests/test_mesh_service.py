@@ -107,3 +107,45 @@ def test_negative_control_message_is_caught_by_the_shared_scanner():
 
     assert response.json["negative_control"] == "caught"
     assert response.json["hits"] > 0
+    assert app.config["SCANNER"].hits == 0
+    assert app.config["SCANNER"].messages == 0
+    assert app.config["SCANNER"].self_test_hits > 0
+
+
+def test_hop_one_anomaly_is_promoted_when_the_chain_becomes_a_cascade():
+    class AnomalyThenCascadeModels(DummyModels):
+        def __init__(self):
+            self.calls = 0
+
+        def score(self, vectors):
+            self.calls += 1
+            if self.calls == 1:
+                return [{"anom": 1.0, "p_cascade": 0.1}]
+            return [{"anom": 0.1, "p_cascade": 0.9}]
+
+    app = create_app(
+        models=AnomalyThenCascadeModels(),
+        bank_urls={},
+        llm_generator=lambda payload, scanner=None: ("{}", {"llm_mode": "template"}),
+    )
+    client = app.test_client()
+    first = message("A", 1, 1000, "BID_000000000001", "BID_000000000002")
+    second = message("B", 1, 5000, "BID_000000000002", "BID_000000000003")
+    third = message("C", 1, 6000, "BID_000000000003", "BID_000000000004")
+
+    first_response = client.post("/ingest", json=first)
+    first_alert = first_response.json["alert"]
+    assert first_alert["type"] == "UNKNOWN_ANOMALY"
+
+    second_response = client.post("/ingest", json=second)
+    active_alerts = client.get("/state").json["alerts"]
+
+    assert second_response.status_code == 200
+    assert len(active_alerts) == 1
+    assert active_alerts[0]["type"] == "CROSS_BANK_MULE_CASCADE"
+    assert active_alerts[0]["hop_depth"] == 2
+    assert active_alerts[0]["alert_id"] == first_alert["alert_id"]
+    assert active_alerts[0]["target_bid"] == "BID_000000000003"
+    third_response = client.post("/ingest", json=third)
+    assert third_response.json["alert"] is None
+    assert len(client.get("/state").json["alerts"]) == 1

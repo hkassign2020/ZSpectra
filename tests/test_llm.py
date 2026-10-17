@@ -74,14 +74,36 @@ class LLMBriefTests(unittest.TestCase):
     def test_api_receives_only_blind_payload_json_and_never_returns_key(self):
         with patch.dict(
             os.environ,
-            {"LLM_API_URL": "http://127.0.0.1:9000/generate", "LLM_API_KEY": "secret-test-key"},
+            {
+                "LLM_API_URL": "http://127.0.0.1:9000/v1/chat/completions",
+                "LLM_API_KEY": "secret-test-key",
+                "LLM_API_MODEL": "granite-lab2",
+            },
         ):
             auditor = RecordingAuditor()
             scanner = RecordingScanner()
             captured = {}
 
             class Response:
-                text = '{"summary":"A cross-bank chain was scored.","suspected_pattern":"cross-bank chain","risk_level":"elevated","recommended_action":"Review the alert.","limits":"Synthetic blind features only."}'
+                text = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(
+                                        {
+                                            "summary": "A cross-bank chain was scored.",
+                                            "suspected_pattern": "cross-bank chain",
+                                            "risk_level": "elevated",
+                                            "recommended_action": "Review the alert.",
+                                            "limits": "Synthetic blind features only.",
+                                        }
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                )
 
                 def raise_for_status(self):
                     pass
@@ -99,19 +121,43 @@ class LLMBriefTests(unittest.TestCase):
 
             expected_json = json.dumps(self.payload, separators=(",", ":"))
             self.assertEqual(prompt_json, expected_json)
-            self.assertEqual(captured["json"]["input"], expected_json)
-            self.assertEqual(captured["json"]["system"], SYSTEM_PROMPT)
+            self.assertEqual(captured["url"], "http://127.0.0.1:9000/v1/chat/completions")
+            self.assertEqual(captured["json"]["model"], "granite-lab2")
+            self.assertEqual(
+                captured["json"]["messages"],
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": expected_json},
+                ],
+            )
+            self.assertEqual(captured["json"]["response_format"], {"type": "json_object"})
             self.assertEqual(captured["headers"]["Authorization"], "Bearer secret-test-key")
             self.assertEqual(auditor.calls, [("mesh_to_llm", self.payload)])
             self.assertEqual(result["llm_mode"], "local")
             self.assertNotIn("secret-test-key", json.dumps(result))
             self.assertEqual([channel for channel, _ in scanner.calls], ["llm_prompt", "llm_response"])
 
-    def test_api_mode_requires_both_url_and_key(self):
+    def test_local_llm_request_does_not_require_an_api_key(self):
+        captured = {}
+
         with patch.dict(
             os.environ,
-            {"LLM_API_URL": "https://llm.example.test/generate", "LLM_API_KEY": ""},
+            {"LLM_API_URL": "http://llama:8080/v1/chat/completions", "LLM_API_KEY": ""},
         ):
+            def post(url, **kwargs):
+                captured["url"] = url
+                captured.update(kwargs)
+                raise RuntimeError("test endpoint is not running")
+
+            with patch.dict(sys.modules, {"requests": SimpleNamespace(post=post)}):
+                _, result = generate_brief(self.payload, auditor=RecordingAuditor())
+
+        self.assertEqual(captured["url"], "http://llama:8080/v1/chat/completions")
+        self.assertNotIn("Authorization", captured["headers"])
+        self.assertEqual(result["llm_mode"], "template")
+
+    def test_api_mode_without_a_url_uses_the_template(self):
+        with patch.dict(os.environ, {"LLM_API_URL": "", "LLM_API_KEY": "secret-test-key"}):
             _, result = generate_brief(self.payload, auditor=RecordingAuditor())
 
         self.assertEqual(result["llm_mode"], "template")

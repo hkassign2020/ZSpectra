@@ -61,7 +61,7 @@ def prepare_demo(
     output_dir: str | Path = "demo-data",
     model_dir: str | Path = "models",
     *,
-    event_count: int = 60_000,
+    event_count: int = 20_000,
     seed: int = 7,
 ) -> dict[str, Any]:
     if not os.environ.get("CONSORTIUM_KEY"):
@@ -114,7 +114,7 @@ def prepare_demo(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--events", type=int, default=60_000)
+    parser.add_argument("--events", type=int, default=20_000)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--output-dir", default="demo-data")
     parser.add_argument("--model-dir", default="models")

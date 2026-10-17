@@ -101,8 +101,14 @@ def create_app(
                 app.logger.warning("hold recommendation delivery failed for bank %s", bank)
         return delivered
 
-    def handle_alert(linked: dict[str, Any], score: dict[str, float], vector: list[float], kind: str) -> dict[str, Any]:
-        alert_id = "AL_" + secrets.token_hex(4)
+    def handle_alert(
+        linked: dict[str, Any],
+        score: dict[str, float],
+        vector: list[float],
+        kind: str,
+        alert_id: str | None = None,
+    ) -> dict[str, Any]:
+        alert_id = alert_id or "AL_" + secrets.token_hex(4)
         evidence = models.evidence(vector)
         llm_payload = {
             "chain": linked["chain"],
@@ -162,14 +168,36 @@ def create_app(
                 return jsonify({"error": "scoring unavailable"}), 503
 
             alert = None
-            if linked["chain_id"] not in state["alerted_chains"]:
-                if linked["hop_depth"] >= 2 and score["p_cascade"] >= thresholds["T_cascade"]:
-                    alert = handle_alert(linked, score, vector, "CROSS_BANK_MULE_CASCADE")
-                elif score["anom"] >= thresholds["T_anom"]:
-                    alert = handle_alert(linked, score, vector, "UNKNOWN_ANOMALY")
-                if alert is not None:
-                    state["alerted_chains"].add(linked["chain_id"])
+            chain_id = linked["chain_id"]
+            prior_alert = next(
+                (item for item in state["alerts"] if item["chain_id"] == chain_id),
+                None,
+            )
+            cascade_triggered = (
+                linked["hop_depth"] >= 2
+                and score["p_cascade"] >= thresholds["T_cascade"]
+            )
+            if cascade_triggered and (
+                prior_alert is None or prior_alert["type"] != "CROSS_BANK_MULE_CASCADE"
+            ):
+                # A hop-one anomaly is provisional: promote it in place if a
+                # later event completes a cascade. Keep one active alert per chain.
+                alert = handle_alert(
+                    linked,
+                    score,
+                    vector,
+                    "CROSS_BANK_MULE_CASCADE",
+                    alert_id=prior_alert["alert_id"] if prior_alert else None,
+                )
+                if prior_alert:
+                    state["alerts"][state["alerts"].index(prior_alert)] = alert
+                else:
                     state["alerts"].append(alert)
+                state["alerted_chains"].add(chain_id)
+            elif prior_alert is None and score["anom"] >= thresholds["T_anom"]:
+                alert = handle_alert(linked, score, vector, "UNKNOWN_ANOMALY")
+                state["alerted_chains"].add(chain_id)
+                state["alerts"].append(alert)
 
             record = {
                 "message": dict(message),
@@ -202,6 +230,9 @@ def create_app(
                         "messages_scanned": scanner.messages,
                         "bytes_scanned": scanner.bytes_scanned,
                         "canary_hits": scanner.hits,
+                        "self_test_messages": scanner.self_test_messages,
+                        "self_test_bytes_scanned": scanner.self_test_bytes_scanned,
+                        "self_test_hits": scanner.self_test_hits,
                         "validator_blocks": auditor.blocked_count,
                     },
                 }
@@ -249,7 +280,9 @@ def create_app(
             {"negative_control_canary": NEGATIVE_CONTROL_TOKEN},
             separators=(",", ":"),
         )
-        hits = scanner.scan("negative_control", control_message)
+        # Self-test traffic is deliberately excluded from production audit
+        # counters so a caught test canary cannot look like a real leak.
+        hits = scanner.scan("negative_control", control_message, count=False)
         caught = hits > 0
         state["negative_control"] = "caught" if caught else "missed"
         return jsonify({"negative_control": state["negative_control"], "hits": hits})
@@ -261,6 +294,9 @@ def create_app(
                 "messages_scanned": scanner.messages,
                 "bytes_scanned": scanner.bytes_scanned,
                 "canary_hits": scanner.hits,
+                "self_test_messages": scanner.self_test_messages,
+                "self_test_bytes_scanned": scanner.self_test_bytes_scanned,
+                "self_test_hits": scanner.self_test_hits,
                 "validator_blocks": auditor.blocked_count,
                 "negative_control": state["negative_control"],
             }
@@ -282,7 +318,7 @@ def main() -> None:
         ScannerLogHandler(app.config["SCANNER"], "audit.log")
     )
     port = int(os.environ.get("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host=os.environ.get("BIND_HOST", "0.0.0.0"), port=port, threaded=True)
 
 
 if __name__ == "__main__":

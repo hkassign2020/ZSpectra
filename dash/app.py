@@ -74,6 +74,9 @@ def create_app(
             "messages_scanned": 0,
             "bytes_scanned": 0,
             "canary_hits": 0,
+            "self_test_messages": 0,
+            "self_test_bytes_scanned": 0,
+            "self_test_hits": 0,
             "validator_blocks": 0,
             "negative_control": None,
         }
@@ -84,7 +87,15 @@ def create_app(
                 response = requests.get(url, timeout=5)
                 response.raise_for_status()
                 value = response.json()
-                for key in ("messages_scanned", "bytes_scanned", "canary_hits", "validator_blocks"):
+                for key in (
+                    "messages_scanned",
+                    "bytes_scanned",
+                    "canary_hits",
+                    "self_test_messages",
+                    "self_test_bytes_scanned",
+                    "self_test_hits",
+                    "validator_blocks",
+                ):
                     counts[key] += int(value.get(key, 0))
                 if value.get("negative_control"):
                     counts["negative_control"] = value["negative_control"]
@@ -171,7 +182,7 @@ def create_app(
 
 def main() -> None:
     port = int(os.environ.get("PORT", "8080"))
-    create_app().run(host="0.0.0.0", port=port, threaded=True)
+    create_app().run(host=os.environ.get("BIND_HOST", "0.0.0.0"), port=port, threaded=True)
 
 
 if __name__ == "__main__":

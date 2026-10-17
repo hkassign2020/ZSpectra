@@ -65,6 +65,9 @@ class CanaryScanner:
         self.messages = 0
         self.bytes_scanned = 0
         self.hits = 0
+        self.self_test_messages = 0
+        self.self_test_bytes_scanned = 0
+        self.self_test_hits = 0
 
     @classmethod
     def from_index_file(cls, path: str | Path) -> "CanaryScanner":
@@ -118,8 +121,17 @@ class CanaryScanner:
         self.messages = 0
         self.bytes_scanned = 0
         self.hits = 0
+        self.self_test_messages = 0
+        self.self_test_bytes_scanned = 0
+        self.self_test_hits = 0
 
-    def scan(self, channel_or_message: str, text: str | None = None) -> int:
+    def scan(
+        self,
+        channel_or_message: str,
+        text: str | None = None,
+        *,
+        count: bool = True,
+    ) -> int:
         """Scan using ``scan(channel, text)`` or the text-only shorthand."""
         if text is None:
             message = channel_or_message
@@ -130,8 +142,12 @@ class CanaryScanner:
         if type(message) is not str:
             raise TypeError("message must be a string")
         raw = message.encode("utf-8")
-        self.messages += 1
-        self.bytes_scanned += len(raw)
+        if count:
+            self.messages += 1
+            self.bytes_scanned += len(raw)
+        else:
+            self.self_test_messages += 1
+            self.self_test_bytes_scanned += len(raw)
 
         found = 0
         for prefix_length in self._candidate_prefix_lengths:
@@ -146,5 +162,8 @@ class CanaryScanner:
                     if start + length <= len(raw):
                         found += hashlib.sha256(raw[start : start + length]).digest() == digest
 
-        self.hits += found
+        if count:
+            self.hits += found
+        else:
+            self.self_test_hits += found
         return found

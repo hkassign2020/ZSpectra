@@ -24,6 +24,16 @@ def test_runtime_dependencies_are_limited_to_the_frozen_stack():
     assert development == ["-r requirements.txt", "pytest"]
 
 
+def test_only_the_mesh_image_installs_numpy_and_scikit_learn():
+    for name in ("bank", "dash", "replayer"):
+        dockerfile = (ROOT / "docker" / f"Dockerfile.{name}").read_text(encoding="utf-8")
+        assert "requirements-core.txt" in dockerfile
+        assert "requirements-ml.txt" not in dockerfile
+    mesh = (ROOT / "docker" / "Dockerfile.mesh").read_text(encoding="utf-8")
+    assert "requirements-core.txt" in mesh
+    assert "requirements-ml.txt" in mesh
+
+
 def test_docker_context_excludes_local_data_and_mesh_receives_only_the_digest_index():
     ignored = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     assert {"demo-data", "models", ".venv", "results.json"}.issubset(set(ignored))

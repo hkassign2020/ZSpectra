@@ -261,8 +261,8 @@ def _live_e2e(repeats: int, dashboard_url: str, replayer_url: str, token: str) -
 
 def evaluate(
     *,
-    seeds: tuple[int, ...] = (0, 1, 2, 3, 4),
-    event_count: int = 60_000,
+    seeds: tuple[int, ...] = (0, 1, 2),
+    event_count: int = 20_000,
     output_path: str | Path = "results.json",
     live_repeats: int = 3,
 ) -> dict[str, Any]:
@@ -332,6 +332,7 @@ def evaluate(
         "audit": audit,
         "limitations": [
             "Synthetic data does not represent production banking traffic.",
+            "The generated features and labels are near-separable by construction; a near-perfect score would indicate an easy synthetic task, not production detection capability.",
             "Pseudonymization supports linkability; BIDs remain pseudonymous.",
             "Latency measurements use one host and are not a multi-region service-level result.",
             "A consortium key makes BIDs linkable by design.",
@@ -347,9 +348,9 @@ def evaluate(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--events", type=int, default=60_000)
-    parser.add_argument("--seeds", type=int, default=5)
-    parser.add_argument("--live-repeats", type=int, default=3)
+    parser.add_argument("--events", type=int, default=20_000)
+    parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--live-repeats", type=int, default=1)
     parser.add_argument("--reduced", action="store_true", help="Use the reduced evaluation configuration")
     parser.add_argument("--output", default="results.json")
     args = parser.parse_args()

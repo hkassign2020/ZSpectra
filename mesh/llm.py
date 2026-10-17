@@ -188,13 +188,24 @@ def _api_mode(url):
     return "api"
 
 
-def _call_api(url, key, payload_json, timeout):
+def _call_api(url, key, payload_json, timeout, model):
     # requests is deliberately imported only for configured API mode.
     requests = importlib.import_module("requests")
+    headers = {"Content-Type": "application/json"}
+    if key.strip():
+        headers["Authorization"] = f"Bearer {key}"
     response = requests.post(
         url,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={"system": SYSTEM_PROMPT, "input": payload_json},
+        headers=headers,
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": payload_json},
+            ],
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+        },
         timeout=timeout,
     )
     response.raise_for_status()
@@ -203,11 +214,12 @@ def _call_api(url, key, payload_json, timeout):
 
 
 def generate_brief(payload, scanner=None, *, auditor=None, timeout=8):
-    """Return a blind-data brief, using an API only when URL and key are set.
+    """Return a blind-data brief, using an API when its URL is configured.
 
     The auditor receives the original object before contract validation and
     before either the template or model path. API failures safely use the
     deterministic template and never include exception text or credentials.
+    A local model endpoint does not need an API key.
     """
     auditor = _resolve_auditor(auditor)
     _audit_payload(auditor, payload)
@@ -216,18 +228,26 @@ def generate_brief(payload, scanner=None, *, auditor=None, timeout=8):
 
     api_url = os.environ.get("LLM_API_URL", "").strip()
     api_key = os.environ.get("LLM_API_KEY", "")
-    if api_url and api_key.strip():
+    api_model = os.environ.get("LLM_API_MODEL", "local-model").strip() or "local-model"
+    if api_url:
         content = None
         raw_response = None
         try:
-            content, raw_response = _call_api(api_url, api_key, payload_json, timeout)
+            content, raw_response = _call_api(
+                api_url,
+                api_key,
+                payload_json,
+                timeout,
+                api_model,
+            )
         except Exception:
             # Keep API diagnostics and credentials out of the dashboard output.
             pass
         if raw_response is not None:
             _scan(scanner, "llm_response", raw_response)
         if content is not None:
-            content["llm_mode"] = _api_mode(api_url)
+            mode = os.environ.get("LLM_API_MODE", "").strip().lower()
+            content["llm_mode"] = mode if mode in {"local", "api"} else _api_mode(api_url)
             return payload_json, content
 
     result = _template(payload)

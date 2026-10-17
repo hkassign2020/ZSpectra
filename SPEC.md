@@ -168,7 +168,7 @@ Each bank checks its own local blind-ID index. Only the owning bank acts. Others
 Signature: `generate(config, seed) -> (raw_events, ground_truth, accounts_by_bank, canary_list)`
 
 - Fully deterministic for a given seed.
-- Defaults: 3 banks, 2,000 accounts per bank, about 60,000 events over a simulated 24 hours.
+- Defaults: 3 banks, 2,000 accounts per bank, about 20,000 events over a simulated 24 hours. Increase `DEMO_EVENTS` for longer runs.
 - Per-bank clock offsets of up to +/-500 ms (to test clock skew).
 - Normal traffic: Poisson arrivals, log-normal amounts, aborts about Poisson(0.05) per 5 s.
 - Attack and hard-negative types:
@@ -218,7 +218,7 @@ Layer 1, in-path validator (`audit/validator.py`): `validate(channel, msg)` rais
 
 Layer 2, canary scanner (`audit/scanner.py`): `CanaryScanner(canary_list).scan(channel, text) -> hits`. Scans every message received by the mesh, every log line (via a logging handler) in banks and mesh, and every LLM prompt and response. The canary list is a test instrument supplied by the harness (file mounted into the mesh container) and is never used for decisions.
 
-Counters (real, never hardcoded): messages scanned, bytes scanned, canary hits, messages blocked by the validator.
+Counters (real, never hardcoded): production messages scanned, bytes scanned, canary hits, messages blocked by the validator. Negative-control scans and hits are kept in separate self-test counters and do not increment production canary-hit status.
 
 Negative control: a test-only function (and dashboard button) that deliberately builds a message containing a canary and sends it through the scanner path. It must be CAUGHT. The audit panel shows "negative control: caught". If it is not caught, the audit is broken.
 
@@ -246,7 +246,7 @@ Mesh features (`MESH_FEATURES`, computed by the mesh): `hop_depth`, `dt_prev_hop
 Scoring (event level): the model input is the 8 sensor features plus the 5 mesh features (13 values). Model 1 produces `anom`. Model 2 takes the 13 features plus `anom`.
 
 Alerting:
-- Cascade alert: `hop_depth >= 2` and `p_cascade >= T_cascade`. One alert per chain. This is "flagged at hop 2". The hold target is the `dst_bid` of the event that raised the alert (the account that just received funds).
+- Cascade alert: `hop_depth >= 2` and `p_cascade >= T_cascade`. One active alert per chain. This is "flagged at hop 2". If a hop-one unknown-anomaly alert exists, promote that alert when the cascade condition is met. The hold target is the `dst_bid` of the event that raised the cascade alert (the account that just received funds).
 - Unknown-anomaly alert: `anom >= T_anom` with label "UNKNOWN_ANOMALY" (this is how the held-out slow-drip type is caught by Model 1 alone).
 - Thresholds are set at 1% false positives on normal validation events and stored in `models/thresholds.json`.
 
@@ -267,7 +267,7 @@ Endpoints: `POST /ingest`, `GET /state`, `GET /stream` (server-sent events), `PO
 - Input is exactly the mesh-to-LLM JSON (6.4), validated before sending, and passed through the scanner.
 - System prompt: the model only knows blind IDs and numbers, must never guess identities, must not invent facts, and must return JSON: `summary`, `suspected_pattern`, `risk_level`, `recommended_action`, `limits`.
 - The exact prompt JSON is stored and shown on the dashboard.
-- Mode order of preference: (1) the method taught in the LinuxONE lab 2 or a small local model on the VM, (2) an API call carrying only the blind payload (API key only in an env var, never shown on screen), (3) a deterministic template. The response always carries `llm_mode` = `local` | `api` | `template`, and the dashboard shows it. A template must be labeled as a template.
+- Mode order of preference: (1) the method taught in the LinuxONE lab 2 or a small local model on the VM, using its supported API, (2) an API call carrying only the blind payload (API key only in an env var, never shown on screen), (3) a deterministic template. The llama.cpp adapter uses `POST /v1/chat/completions` with `model`, `messages`, and JSON response format. The response always carries `llm_mode` = `local` | `api` | `template`, and the dashboard shows it. A template must be labeled as a template.
 - The LLM response is also scanned for canaries.
 
 ### 7.8 Dashboard (`dash/`)
@@ -293,6 +293,7 @@ Flask plus plain HTML and JavaScript. No build step, no Streamlit. Panels:
 
 - The platform is s390x, which is big-endian. Never assume byte order. Always give an explicit byte order if you use `struct` or raw numpy buffers. Use JSON on the wire, never pickle across services.
 - Build Docker images ON the LinuxONE VM. Use a base image that has an s390x variant (verify with `docker pull`).
+- Before a target run, execute `python3 tools/linuxone_preflight.py` to record Python imports and Docker CLI/daemon availability. Use `--install-check` to try installing the project requirements into a temporary directory. Do not treat a host package check as proof that all Docker images build.
 - Keep each container small. Assume the VM has limited RAM (check with `free -h`). Keep models small.
 - Platform proof commands to run and screenshot:
   - `lscpu | grep -E 'Architecture|Byte Order|Model name|Flags'`
@@ -307,7 +308,7 @@ Flask plus plain HTML and JavaScript. No build step, no Streamlit. Panels:
 
 ## 9. Evaluation and `results.json`
 
-`bench/bench.py` runs everything and writes `results.json`. Every number shown anywhere in the project must come from it. Use 5 seeds (3 in the reduced version) and report mean and standard deviation.
+`bench/bench.py` runs everything and writes `results.json`. Every number shown anywhere in the project must come from it. Use 3 seeds by default for the reduced VM run; use 5 for a full evaluation. Report mean and standard deviation.
 
 ```
 meta: git_commit, date, host {arch, byte_order, model_name, dflt_flag, cpus, mem_gb}, seeds
@@ -387,11 +388,11 @@ Each segment's README section must contain one demo command.
 Order: contracts and repo (S1), platform proof (S0), then generator, sensor and audit in parallel (S2, S3, S4), then a one-process walking skeleton (event to sensor to validator to mesh to alert), then containers (S5), mesh and models (S6) and the LLM (S7) in parallel, then the dashboard (S8), evaluation (S9), packaging (S10).
 
 Fallbacks:
-- No Docker or Podman: separate processes with separate Unix users and ports, called "isolated processes".
-- zlib is not hardware-backed: do not claim DFLTCC. Show the `dflt` flag and our measured numbers.
+- No Docker or Podman: use process mode with separate service environments and loopback ports. The demo runs under the invoking OS account, so this fallback is not equivalent to container or separate-user isolation.
+- zlib hardware toggle is unset: do not claim DFLTCC use. Report the host flag and measured zlib results only when results exist; `hw_on_us` remains unavailable until a documented toggle is configured.
 - Compression adds no lift: lead with the privacy boundary and audit, and report the result honestly.
 - Snap ML will not import: use scikit-learn HistGradientBoosting.
-- No LLM on the VM: lab 2 method, then an API call with the blind payload only, then a labeled template.
+- No LLM on the VM: lab 2 method, then a compatible API call with the blind payload only, then a labeled template.
 - Short on time: drop to 2 banks, reduce the ablation to two configurations, 3 seeds, and skip the slow-drip holdout.
 
 ---

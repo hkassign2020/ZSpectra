@@ -129,6 +129,18 @@ def test_canary_scanner_does_not_retain_source_strings_and_counts_hits():
     assert scanner.messages == 2
 
 
+def test_self_test_scan_counters_do_not_affect_production_counters():
+    scanner = CanaryScanner()
+
+    assert scanner.scan("negative_control", "SYNTHETIC_CANARY_NEGATIVE_CONTROL", count=False) == 1
+
+    assert scanner.messages == 0
+    assert scanner.bytes_scanned == 0
+    assert scanner.hits == 0
+    assert scanner.self_test_messages == 1
+    assert scanner.self_test_hits == 1
+
+
 def test_auditor_reset_clears_blocked_counter():
     auditor = Auditor()
     with pytest.raises(AuditValidationError):
