@@ -173,7 +173,7 @@ def stop() -> int:
 
 
 def _wait_ready(pid: int, module: str, port: int) -> bool:
-    url = f"http://127.0.0.1:{port}/health"
+    url = f"http://127.0.0.1:{port}" + ("/api/health" if module == "dash.app" else "/health")
     for _ in range(60):
         if not _matches_module(pid, module):
             return False

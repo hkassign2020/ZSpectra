@@ -203,7 +203,7 @@ case "$command" in
     "$PYTHON_BIN" -m bench.bench \
       --events "${DEMO_EVENTS:-20000}" \
       --seeds "${EVAL_SEEDS:-3}" \
-      --live-repeats "${EVAL_LIVE_REPEATS:-1}"
+      --live-repeats "${EVAL_LIVE_REPEATS:-10}"
     start_dashboard
     capture_platform
     ;;

@@ -264,7 +264,7 @@ def evaluate(
     seeds: tuple[int, ...] = (0, 1, 2),
     event_count: int = 20_000,
     output_path: str | Path = "results.json",
-    live_repeats: int = 3,
+    live_repeats: int = 10,
 ) -> dict[str, Any]:
     if not seeds:
         raise ValueError("at least one evaluation seed is required")
@@ -350,7 +350,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events", type=int, default=20_000)
     parser.add_argument("--seeds", type=int, default=3)
-    parser.add_argument("--live-repeats", type=int, default=1)
+    parser.add_argument("--live-repeats", type=int, default=10)
     parser.add_argument("--reduced", action="store_true", help="Use the reduced evaluation configuration")
     parser.add_argument("--output", default="results.json")
     args = parser.parse_args()

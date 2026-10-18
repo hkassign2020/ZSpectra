@@ -37,7 +37,7 @@ export CONSORTIUM_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32)
 
 Open `http://127.0.0.1:8080`. Use `./run.sh status` to check the services, `./run.sh reset` to clear demo state, and `./run.sh stop` to stop the services. Process-mode logs are under `.run/logs/`.
 
-`./run.sh eval` writes observed measurements to `results.json`; its default evaluation uses `DEMO_EVENTS=20000`, three seeds, and one live repeat. Override those values with `DEMO_EVENTS`, `EVAL_SEEDS`, and `EVAL_LIVE_REPEATS`. The evaluation is still a synthetic demonstration, not a production efficacy result.
+`./run.sh eval` writes observed measurements to `results.json`; its default evaluation uses `DEMO_EVENTS=20000`, three seeds, and ten live end-to-end repeats for latency percentiles. Override those values with `DEMO_EVENTS`, `EVAL_SEEDS`, and `EVAL_LIVE_REPEATS`. Ten repeats give a basic spread estimate; p99 is still a rough estimate at this sample count. The evaluation is still a synthetic demonstration, not a production efficacy result.
 
 ## LLM brief
 
