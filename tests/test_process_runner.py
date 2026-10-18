@@ -6,6 +6,7 @@ def test_process_mode_keeps_the_consortium_key_only_in_bank_environments(monkeyp
     monkeypatch.setenv("REPLAY_TOKEN", "test-replay-token")
     monkeypatch.setenv("LLM_URL", "http://llm-host:8082/v1/chat/completions")
     monkeypatch.setenv("LLM_MODEL", "granite-local")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "low")
     monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
 
     services = {name: env for name, _module, _port, env in _services()}
@@ -19,8 +20,12 @@ def test_process_mode_keeps_the_consortium_key_only_in_bank_environments(monkeyp
     assert services["mesh"]["LLM_API_KEY"] == "test-llm-key"
     assert services["mesh"]["LLM_URL"] == "http://llm-host:8082/v1/chat/completions"
     assert services["mesh"]["LLM_MODEL"] == "granite-local"
+    assert services["mesh"]["LLM_REASONING_EFFORT"] == "low"
     assert all(
-        all(name not in services[service] for name in ("LLM_API_KEY", "LLM_URL", "LLM_MODEL"))
+        all(
+            name not in services[service]
+            for name in ("LLM_API_KEY", "LLM_URL", "LLM_MODEL", "LLM_REASONING_EFFORT")
+        )
         for service in ("bank-A", "bank-B", "bank-C", "replayer", "dashboard")
     )
     assert "LLM_API_KEY" not in services["dashboard"]

@@ -194,19 +194,23 @@ def _call_api(url, key, payload_json, timeout, model):
     headers = {"Content-Type": "application/json"}
     if key.strip():
         headers["Authorization"] = f"Bearer {key}"
+    request_body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": payload_json},
+        ],
+        "max_tokens": 512,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+    reasoning_effort = os.environ.get("LLM_REASONING_EFFORT", "").strip()
+    if reasoning_effort:
+        request_body["reasoning_effort"] = reasoning_effort
     response = requests.post(
         url,
         headers=headers,
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": payload_json},
-            ],
-            "max_tokens": 150,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        },
+        json=request_body,
         timeout=timeout,
     )
     response.raise_for_status()

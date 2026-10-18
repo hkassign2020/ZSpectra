@@ -123,6 +123,7 @@ class LLMBriefTests(unittest.TestCase):
                     "LLM_URL": f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
                     "LLM_API_KEY": "secret-test-key",
                     "LLM_MODEL": "granite-lab2",
+                    "LLM_REASONING_EFFORT": "low",
                 },
             ):
                 auditor = RecordingAuditor()
@@ -143,9 +144,10 @@ class LLMBriefTests(unittest.TestCase):
                     {"role": "user", "content": expected_json},
                 ],
             )
-            self.assertEqual(captured["body"]["max_tokens"], 150)
+            self.assertEqual(captured["body"]["max_tokens"], 512)
             self.assertEqual(captured["body"]["temperature"], 0.2)
             self.assertEqual(captured["body"]["response_format"], {"type": "json_object"})
+            self.assertEqual(captured["body"]["reasoning_effort"], "low")
             self.assertEqual(post.call_args.kwargs["timeout"], 60)
             self.assertEqual(prompt_json, expected_json)
             self.assertEqual(auditor.calls, [("mesh_to_llm", self.payload)])

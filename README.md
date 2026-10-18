@@ -109,7 +109,7 @@ If the listener is only `127.0.0.1:8082`, restart the Lab 2 or Granite server wi
 
 ## LLM brief
 
-The mesh calls the OpenAI-compatible chat endpoint at `LLM_URL` with `LLM_MODEL` and optional `LLM_API_KEY`. The default endpoint is the Lab 2 service on the host at `http://host.docker.internal:8082/v1/chat/completions` in Docker mode, and `http://127.0.0.1:8082/v1/chat/completions` in process mode. The request uses a 60-second timeout, `max_tokens=150`, and `temperature=0.2`; failures use a labeled template brief.
+The mesh calls the OpenAI-compatible chat endpoint at `LLM_URL` with `LLM_MODEL` and optional `LLM_API_KEY`. The default endpoint is the Lab 2 service on the host at `http://host.docker.internal:8082/v1/chat/completions` in Docker mode, and `http://127.0.0.1:8082/v1/chat/completions` in process mode. The request uses a 60-second timeout, `max_tokens=512`, and `temperature=0.2`; failures use a labeled template brief. `LLM_REASONING_EFFORT` is optional and is passed through only when set; Gemini users can set it to `low` to reduce reasoning-token use.
 
 ```sh
 export LLM_URL=http://127.0.0.1:8082/v1/chat/completions
@@ -120,6 +120,20 @@ ZSPECTRA_MODE=process ./run.sh demo
 The Docker mesh container gets `--add-host=host.docker.internal:host-gateway`, and `run.sh` sets `LLM_URL` to that host endpoint. The exact compact blind JSON shown in the dashboard is sent as the user message; the separate system message contains the safety instructions. The payload is validated and scanned before sending, and the response is scanned before display. `llm_mode` is `local`, `api`, or `template`; the dashboard shows a pending alert immediately and fills in the brief when generation completes. `LLM_API_KEY` is passed only to the mesh process/container.
 
 The endpoint must expose `POST /v1/chat/completions` with the OpenAI chat-completions request shape.
+
+For a hosted OpenAI-compatible provider such as Gemini, set the provider's compatible endpoint, an enabled model ID, and its API key before starting. For example, from a Linux shell:
+
+```sh
+read -rsp 'LLM API key: ' LLM_API_KEY; echo
+export LLM_API_KEY
+export LLM_URL='https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+export LLM_MODEL='your-enabled-model-id'
+export LLM_REASONING_EFFORT='low'
+./run.sh stop
+./run.sh demo
+```
+
+The runner passes the configured URL, model options, and key only to the mesh container. Keep the key in the shell environment; do not commit it or paste it into dashboard fields. After a heist, `api` beside **LLM BRIEF** means the remote endpoint returned a valid brief. `template` means the call failed or its response did not match the required JSON fields. The endpoint must be reachable from the LinuxONE VM and permit the requested chat-completions JSON response. Provider availability and quotas are controlled by the provider account.
 
 ## Results
 

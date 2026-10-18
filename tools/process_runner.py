@@ -22,7 +22,15 @@ PID_FILE = RUN_DIR / "processes.json"
 
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
-    for name in ("CONSORTIUM_KEY", "LLM_URL", "LLM_MODEL", "LLM_API_KEY", "REPLAY_TOKEN", "OPERATOR_TOKEN"):
+    for name in (
+        "CONSORTIUM_KEY",
+        "LLM_URL",
+        "LLM_MODEL",
+        "LLM_REASONING_EFFORT",
+        "LLM_API_KEY",
+        "REPLAY_TOKEN",
+        "OPERATOR_TOKEN",
+    ):
         env.pop(name, None)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
@@ -60,6 +68,7 @@ def _services() -> list[tuple[str, str, int, dict[str, str]]]:
                 "LLM_URL", "http://127.0.0.1:8082/v1/chat/completions"
             ),
             "LLM_MODEL": os.environ.get("LLM_MODEL", "local-model"),
+            "LLM_REASONING_EFFORT": os.environ.get("LLM_REASONING_EFFORT", ""),
         }
     )
     for name in ("LLM_API_KEY",):
