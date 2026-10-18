@@ -7,4 +7,4 @@
    COPY audit ./audit
    COPY contracts ./contracts
    COPY mesh ./mesh
-   CMD ["python3", "-m", "mesh.service"]
+CMD ["python3", "-m", "mesh.service"]
