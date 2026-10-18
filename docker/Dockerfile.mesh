@@ -1,10 +1,10 @@
-FROM python:3.11-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /app
-COPY requirements-core.txt requirements-ml.txt ./
-RUN python -m pip install --no-cache-dir -r requirements-core.txt \
-    && python -m pip install --no-cache-dir -r requirements-ml.txt
-COPY audit ./audit
-COPY contracts ./contracts
-COPY mesh ./mesh
-CMD ["python", "-m", "mesh.service"]
+   FROM ubuntu:24.04
+   ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DEBIAN_FRONTEND=noninteractive
+   RUN apt-get update && apt-get install -y --no-install-recommends \
+         python3 python3-flask python3-requests python3-numpy python3-scipy python3-sklearn \
+       && rm -rf /var/lib/apt/lists/*
+   WORKDIR /app
+   COPY audit ./audit
+   COPY contracts ./contracts
+   COPY mesh ./mesh
+   CMD ["python3", "-m", "mesh.service"]
