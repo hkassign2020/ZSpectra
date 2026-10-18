@@ -70,8 +70,17 @@ def _render_readme_results(document: dict[str, Any]) -> str:
         lines.append(f"- {label}: {mean:,.2f} ± {std:,.2f}{unit}.")
 
     detection = document.get("detection", {})
-    add_summary("Cascade recall at 1% FPR", detection.get("recall_at_1pct_fpr"), 100.0, "%")
+    add_summary(
+        "Cascade recall (threshold calibrated to 1% validation FPR)",
+        detection.get("recall_at_1pct_fpr"),
+        100.0,
+        "%",
+    )
+    add_summary("Observed held-out cascade FPR", detection.get("fpr_observed"), 100.0, "%")
     add_summary("Alert precision", detection.get("alert_precision"), 100.0, "%")
+    add_summary("False-positive alert chains per seed", detection.get("false_positive_alert_chains"))
+    add_summary("Alerted chains per seed", detection.get("alerted_chains"))
+    add_summary("False-positive alert events per seed", detection.get("false_positive_alert_events"))
     add_summary("Cascades flagged at hop 2", detection.get("cascades_flagged_at_hop2_pct"), 1.0, "%")
     add_summary(
         "Slow-drip zero-day recall (Model 1 alone)",
@@ -273,6 +282,11 @@ def _detection_metrics(model: Any, rows: list[dict[str, Any]]) -> dict[str, floa
         "cascades_flagged_at_hop2_pct": 100.0 * float(np.mean(cascade_predictions[hop_two])),
         "zero_day_slow_drip_recall_at_1pct_fpr": float(np.mean(anomaly_predictions[slow])),
         "alert_precision": precision,
+        "alerted_chains": float(len(predicted_chains)),
+        "false_positive_alert_chains": float(
+            sum(not bool(row["is_attack"]) for row in predicted_chains.values())
+        ),
+        "false_positive_alert_events": float(np.sum(alerts & normal)),
         "value_still_stoppable_pct": float(statistics.mean(cascade_outcomes["value_still_stoppable_pct"])),
         "time_to_flag_ms": float(statistics.mean(cascade_outcomes["time_to_flag_ms"])),
         "alert_to_next_hop_gap_ms": float(statistics.mean(cascade_outcomes["alert_to_next_hop_gap_ms"])),
@@ -500,7 +514,11 @@ def evaluate(
         "zero_day_slow_drip_recall_at_1pct_fpr": _summary(
             item["zero_day_slow_drip_recall_at_1pct_fpr"] for item in per_seed
         ),
+        "fpr_observed": _summary(item["fpr_observed"] for item in per_seed),
         "alert_precision": _summary(item["alert_precision"] for item in per_seed),
+        "alerted_chains": _summary(item["alerted_chains"] for item in per_seed),
+        "false_positive_alert_chains": _summary(item["false_positive_alert_chains"] for item in per_seed),
+        "false_positive_alert_events": _summary(item["false_positive_alert_events"] for item in per_seed),
         "value_still_stoppable_pct": _summary(item["value_still_stoppable_pct"] for item in per_seed),
         "time_to_flag_ms": _summary(item["time_to_flag_ms"] for item in per_seed),
         "alert_to_next_hop_gap_ms": _summary(item["alert_to_next_hop_gap_ms"] for item in per_seed),

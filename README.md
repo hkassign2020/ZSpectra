@@ -96,6 +96,8 @@ Open `http://127.0.0.1:8080`. Use `./run.sh status` to check the services, `./ru
 
 `./run.sh eval` writes observed measurements to `results.json`; its default evaluation uses `DEMO_EVENTS=20000`, three seeds, and ten live repeats at each replay speed (1x, 5x, and 10x). It reports alert decision latency and end-to-end hold-delivery latency at each speed, plus remaining transfer value and alert timing from held-out ground truth. Override the data size, seed count, and repeats with `DEMO_EVENTS`, `EVAL_SEEDS`, and `EVAL_LIVE_REPEATS`. Ten repeats give a basic spread estimate; p99 is still rough at this sample count. The evaluation is a synthetic demonstration, not a production efficacy result.
 
+Detection results are evaluated on held-out synthetic events. The cascade threshold targets 1% false-positive rate on calibration data; `fpr_observed` reports the measured rate on held-out normal and hard-negative events, which may differ from that target. Results also report alert precision, false-positive alert-event counts, and false-positive alert-chain counts per seed so the trade-off is visible. Alert-chain counts are distinct synthetic chains; they are not real customer or transaction counts.
+
 ## Docker and LLM connectivity
 
 In Docker mode, `host.docker.internal` reaches the host through the gateway configured by `run.sh`. The LLM service must listen on an address reachable from Docker. On the LinuxONE VM, check:
