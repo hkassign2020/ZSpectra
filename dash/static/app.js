@@ -106,10 +106,17 @@ function drawDecision(state) {
   decision.appendChild(evidence);
 
   const brief = alert.llm_brief || {};
-  $("#llm-mode").textContent = brief.llm_mode ? `· ${brief.llm_mode}` : "";
+  $("#llm-mode").textContent = brief.llm_mode
+    ? `· ${brief.llm_mode}`
+    : alert.llm_status === "pending" ? "· generating" : "";
   const briefView = $("#brief");
   briefView.replaceChildren();
   briefView.className = "brief";
+  if (!alert.llm_brief && alert.llm_status === "pending") {
+    briefView.textContent = "Alert is live. Generating the blind-data brief…";
+    $("#prompt").textContent = alert.llm_prompt || "No prompt sent.";
+    return;
+  }
   const fields = [
     ["Summary", "summary"],
     ["Pattern", "suspected_pattern"],
@@ -190,14 +197,72 @@ async function refreshPlatform() {
 
 async function refreshResults() {
   const output = $("#results");
+  const summary = $("#results-summary");
   try {
     const response = await fetch("/api/results", { cache: "no-store" });
     const payload = await response.json();
-    output.textContent = payload.available
-      ? JSON.stringify(payload.results, null, 2)
-      : "No measured results file is available.";
+    if (!payload.available) {
+      output.textContent = "No measured results file is available.";
+      summary.className = "results-grid empty";
+      summary.textContent = "No measured results file is available.";
+      return;
+    }
+    output.textContent = JSON.stringify(payload.results, null, 2);
+    drawResultSummary(payload.results || {});
   } catch (_) {
     output.textContent = "Measured results unavailable.";
+    summary.className = "results-grid empty";
+    summary.textContent = "Measured results unavailable.";
+  }
+}
+
+function drawResultSummary(results) {
+  const target = $("#results-summary");
+  target.replaceChildren();
+  target.className = "results-grid";
+
+  const card = (title, lines) => {
+    const item = document.createElement("article");
+    item.className = "result-card";
+    const heading = document.createElement("div");
+    heading.className = "result-heading";
+    appendText(heading, "h3", title);
+    appendText(heading, "span", "synthetic data", "pill synthetic-label");
+    item.appendChild(heading);
+    for (const line of lines) appendText(item, "p", line, "result-value");
+    target.appendChild(item);
+  };
+  const summaryLine = (value, scale = 1, unit = "") => {
+    if (!value || typeof value.mean !== "number" || typeof value.std !== "number") return "No measured value.";
+    return `${formatNumber(value.mean * scale)} ± ${formatNumber(value.std * scale)}${unit}`;
+  };
+  const detection = results.detection || {};
+  card("Value still stoppable", [summaryLine(detection.value_still_stoppable_pct, 1, "% mean ± std over seeds")]);
+  card("Time to flag from hop 1", [summaryLine(detection.time_to_flag_ms, 1, " ms mean ± std over seeds")]);
+  card("Alert to next hop", [summaryLine(detection.alert_to_next_hop_gap_ms, 1, " ms mean ± std over seeds")]);
+
+  const loadTest = results.load_test || {};
+  const decisionBySpeed = loadTest.decision_latency_ms || {};
+  for (const speed of ["1x", "5x", "10x"]) {
+    const metric = decisionBySpeed[speed];
+    card(`Decision latency at ${speed} replay`, metric
+      ? [
+          `p50 ${formatNumber(metric.p50)} ms · p95 ${formatNumber(metric.p95)} ms · p99 ${formatNumber(metric.p99)} ms`,
+          `${formatNumber(metric.n)} alert decisions measured`,
+        ]
+      : ["No measured value."]);
+  }
+
+  const zeroDay = detection.zero_day_slow_drip_recall_at_1pct_fpr;
+  card("Slow-drip zero-day recall · Model 1 alone", [summaryLine(zeroDay, 100, "% mean ± std over seeds")]);
+
+  const ablations = results.ablation || {};
+  for (const [name, label] of [
+    ["raw_only", "Ablation · raw features"],
+    ["raw_plus_compression", "Ablation · raw + compression"],
+    ["compression_only", "Ablation · compression features"],
+  ]) {
+    card(label, [summaryLine(ablations[name]?.recall_at_1pct_fpr, 100, "% recall mean ± std over seeds")]);
   }
 }
 

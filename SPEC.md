@@ -114,13 +114,14 @@ Raw events must contain NO label fields.
 ### 6.2 Ground truth (separate file, read only by the evaluation harness)
 
 ```
-event_id, chain_id, attack_type, hop_index, is_attack
+event_id, chain_id, attack_type, hop_index, is_attack, ts_ms, amount
 attack_type in: NORMAL, CROSS_BANK_MULE_CASCADE, ABORT_STORM, SLOW_DRIP_STRUCTURING,
                 HARD_NEG_PAYROLL_FANOUT, HARD_NEG_FAMILY_RELAY, HARD_NEG_MERCHANT_BURST,
                 HARD_NEG_QUICK_RELAY
 ```
 
 All `HARD_NEG_*` types count as normal for scoring. Never send ground truth to banks or to the mesh.
+`ts_ms` and `amount` are evaluation-only values copied from the synthetic raw event; they support alert-timing and remaining-value measurements.
 
 ### 6.3 Canonical account and blind ID (critical)
 
@@ -268,6 +269,7 @@ Endpoints: `POST /ingest`, `GET /state`, `GET /stream` (server-sent events), `PO
 - System prompt: the model only knows blind IDs and numbers, must never guess identities, must not invent facts, and must return JSON: `summary`, `suspected_pattern`, `risk_level`, `recommended_action`, `limits`.
 - The exact prompt JSON is stored and shown on the dashboard.
 - Mode order of preference: (1) the method taught in the LinuxONE lab 2 or a small local model on the VM, using its supported API, (2) an API call carrying only the blind payload (API key only in an env var, never shown on screen), (3) a deterministic template. The llama.cpp adapter uses `POST /v1/chat/completions` with `model`, `messages`, and JSON response format. The response always carries `llm_mode` = `local` | `api` | `template`, and the dashboard shows it. A template must be labeled as a template.
+- Configure the endpoint with `LLM_URL`, the loaded model with `LLM_MODEL`, and optional credentials with `LLM_API_KEY`. The user message must be byte-for-byte the compact validated blind JSON displayed as the prompt. Use `max_tokens=150`, `temperature=0.2`, and a 60-second request deadline; on failure or timeout, show the deterministic template. The dashboard shows the alert as soon as it is raised and updates the brief when it arrives.
 - The LLM response is also scanned for canaries.
 
 ### 7.8 Dashboard (`dash/`)
@@ -313,14 +315,22 @@ Flask plus plain HTML and JavaScript. No build step, no Streamlit. Panels:
 ```
 meta: git_commit, date, host {arch, byte_order, model_name, dflt_flag, cpus, mem_gb}, seeds
 sensor_latency_us:        {p50, p95, p99, n}
-decision_latency_ms:      {p50, p95, p99}   same host, from mesh receipt to alert
-end_to_end_ms:            {p50, p95, p99}   replayer send to hold_rec delivered
+decision_latency_ms:      {p50, p95, p99, n}   same host, from mesh receipt to alert
+end_to_end_ms:            {p50, p95, p99, n}   10x replay, replayer send to hold_rec delivered
+load_test:
+  replay_speed_factors: [1, 5, 10]
+  repeats_per_speed: int
+  decision_latency_ms: {"1x" | "5x" | "10x": {p50, p95, p99, n}}
+  end_to_end_ms:       {"1x" | "5x" | "10x": {p50, p95, p99, n}}
 detection:
   recall_at_1pct_fpr:                 {mean, std, per_seed}   cascade events vs normal
   cascades_flagged_at_hop2_pct:       {mean, std, per_seed}
-  zero_day_slow_drip_recall_at_1pct_fpr: {mean, std}          Model 1 alone, held-out type
+  zero_day_slow_drip_recall_at_1pct_fpr: {mean, std, per_seed} Model 1 alone, held-out type
   alert_precision:                    {mean, std}
-ablation: raw_only | raw_plus_compression | compression_only   each with recall_at_1pct_fpr {mean, std}
+  value_still_stoppable_pct:           {mean, std, per_seed}   future ground-truth transfer value / hop-1 amount for flagged cascades
+  time_to_flag_ms:                     {mean, std, per_seed}   first hop timestamp to first alert timestamp
+  alert_to_next_hop_gap_ms:            {mean, std, per_seed}   first alert timestamp to the next ground-truth hop
+ablation: raw_only | raw_plus_compression | compression_only   each with recall_at_1pct_fpr {mean, std, per_seed}
   - raw features = log_amount_bin, log1p_gap_ms, aborts_5s, tx_count_60s, distinct_dest_60s
   - compression features = window_ncd, compression_ratio, window_entropy
   - the 5 mesh features are included in all three configurations

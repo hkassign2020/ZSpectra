@@ -1,3 +1,7 @@
+import json
+import threading
+import time
+
 import pytest
 
 pytest.importorskip("flask")
@@ -49,16 +53,8 @@ def test_heist_alerts_at_hop_two_and_recommends_hold_for_received_account(monkey
     app = create_app(
         models=DummyModels(),
         bank_urls={bank: f"http://bank-{bank}" for bank in ("A", "B", "C")},
-        llm_generator=lambda payload, scanner=None: (
-            "{}",
-            {
-                "summary": "Synthetic cascade detected.",
-                "suspected_pattern": "cross-bank mule cascade",
-                "risk_level": "high",
-                "recommended_action": "review hold recommendation",
-                "limits": "Synthetic demonstration.",
-                "llm_mode": "template",
-            },
+        llm_generator=lambda payload, scanner=None, **kwargs: (
+            kwargs["prompt_json"], {"llm_mode": "template"}
         ),
     )
     client = app.test_client()
@@ -74,6 +70,9 @@ def test_heist_alerts_at_hop_two_and_recommends_hold_for_received_account(monkey
     assert len(state["alerts"]) == 1
     assert state["alerts"][0]["hop_depth"] == 2
     assert state["alerts"][0]["hold_rec"]["bid"] == "BID_000000000003"
+    metrics = client.get("/metrics").json["decision_latency_ms"]
+    assert len(metrics) == 1
+    assert metrics[0] >= 0
     assert len(sent_holds) == 3
     assert all(payload["bid"] == "BID_000000000003" for _, payload in sent_holds)
 
@@ -82,7 +81,9 @@ def test_reset_clears_mesh_chain_and_alert_state():
     app = create_app(
         models=DummyModels(),
         bank_urls={},
-        llm_generator=lambda payload, scanner=None: ("{}", {"llm_mode": "template"}),
+        llm_generator=lambda payload, scanner=None, **kwargs: (
+            kwargs["prompt_json"], {"llm_mode": "template"}
+        ),
     )
     client = app.test_client()
     client.post(
@@ -92,6 +93,7 @@ def test_reset_clears_mesh_chain_and_alert_state():
 
     assert client.post("/reset").status_code == 200
     assert client.get("/state").json["events"] == []
+    assert client.get("/metrics").json["decision_latency_ms"] == []
     assert app.config["SCANNER"].messages == 0
     assert app.config["VALIDATOR"].blocked_count == 0
 
@@ -100,7 +102,9 @@ def test_negative_control_message_is_caught_by_the_shared_scanner():
     app = create_app(
         models=DummyModels(),
         bank_urls={},
-        llm_generator=lambda payload, scanner=None: ("{}", {"llm_mode": "template"}),
+        llm_generator=lambda payload, scanner=None, **kwargs: (
+            kwargs["prompt_json"], {"llm_mode": "template"}
+        ),
     )
 
     response = app.test_client().post("/audit/negative-control")
@@ -126,7 +130,9 @@ def test_hop_one_anomaly_is_promoted_when_the_chain_becomes_a_cascade():
     app = create_app(
         models=AnomalyThenCascadeModels(),
         bank_urls={},
-        llm_generator=lambda payload, scanner=None: ("{}", {"llm_mode": "template"}),
+        llm_generator=lambda payload, scanner=None, **kwargs: (
+            kwargs["prompt_json"], {"llm_mode": "template"}
+        ),
     )
     client = app.test_client()
     first = message("A", 1, 1000, "BID_000000000001", "BID_000000000002")
@@ -149,3 +155,48 @@ def test_hop_one_anomaly_is_promoted_when_the_chain_becomes_a_cascade():
     third_response = client.post("/ingest", json=third)
     assert third_response.json["alert"] is None
     assert len(client.get("/state").json["alerts"]) == 1
+
+
+def test_alert_is_visible_before_slow_llm_brief_arrives():
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_generator(payload, scanner=None, **kwargs):
+        started.set()
+        release.wait(timeout=2)
+        return kwargs["prompt_json"], {
+            "summary": "The blind chain was reviewed.",
+            "suspected_pattern": "cross-bank chain",
+            "risk_level": "unclassified",
+            "recommended_action": "Review the evidence.",
+            "limits": "Synthetic blind features only.",
+            "llm_mode": "local",
+        }
+
+    app = create_app(models=DummyModels(), bank_urls={}, llm_generator=slow_generator)
+    client = app.test_client()
+    client.post(
+        "/ingest",
+        json=message("A", 1, 1000, "BID_000000000001", "BID_000000000002"),
+    )
+
+    response = client.post(
+        "/ingest",
+        json=message("B", 1, 5000, "BID_000000000002", "BID_000000000003"),
+    )
+    assert response.status_code == 200
+    alert = response.json["alert"]
+    assert alert["llm_status"] == "pending"
+    assert json.loads(alert["llm_prompt"]) == alert["llm_payload"]
+    assert started.wait(timeout=1)
+    assert client.get("/state").json["alerts"][0]["llm_status"] == "pending"
+
+    release.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        current = client.get("/state").json["alerts"][0]
+        if current["llm_status"] == "complete":
+            break
+        time.sleep(0.01)
+    assert current["llm_status"] == "complete"
+    assert current["llm_brief"]["llm_mode"] == "local"

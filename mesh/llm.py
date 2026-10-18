@@ -183,7 +183,7 @@ def _normalize_api_result(candidate):
 
 def _api_mode(url):
     hostname = (urlparse(url).hostname or "").lower()
-    if hostname == "localhost" or hostname == "::1" or hostname.startswith("127."):
+    if hostname in {"localhost", "::1", "host.docker.internal"} or hostname.startswith("127."):
         return "local"
     return "api"
 
@@ -203,7 +203,8 @@ def _call_api(url, key, payload_json, timeout, model):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": payload_json},
             ],
-            "temperature": 0,
+            "max_tokens": 150,
+            "temperature": 0.2,
             "response_format": {"type": "json_object"},
         },
         timeout=timeout,
@@ -213,7 +214,12 @@ def _call_api(url, key, payload_json, timeout, model):
     return _normalize_api_result(candidate), raw_text
 
 
-def generate_brief(payload, scanner=None, *, auditor=None, timeout=8):
+def serialize_payload(payload):
+    """Validate and serialize the exact compact JSON shown as the LLM prompt."""
+    return _validate_payload(payload)
+
+
+def generate_brief(payload, scanner=None, *, auditor=None, timeout=60, prompt_json=None):
     """Return a blind-data brief, using an API when its URL is configured.
 
     The auditor receives the original object before contract validation and
@@ -224,11 +230,13 @@ def generate_brief(payload, scanner=None, *, auditor=None, timeout=8):
     auditor = _resolve_auditor(auditor)
     _audit_payload(auditor, payload)
     payload_json = _validate_payload(payload)
+    if prompt_json is not None and prompt_json != payload_json:
+        raise ValueError("prompt JSON does not match the validated blind payload")
     _scan(scanner, "llm_prompt", payload_json)
 
-    api_url = os.environ.get("LLM_API_URL", "").strip()
+    api_url = os.environ.get("LLM_URL", "").strip()
     api_key = os.environ.get("LLM_API_KEY", "")
-    api_model = os.environ.get("LLM_API_MODEL", "local-model").strip() or "local-model"
+    api_model = os.environ.get("LLM_MODEL", "local-model").strip() or "local-model"
     if api_url:
         content = None
         raw_response = None
@@ -246,8 +254,7 @@ def generate_brief(payload, scanner=None, *, auditor=None, timeout=8):
         if raw_response is not None:
             _scan(scanner, "llm_response", raw_response)
         if content is not None:
-            mode = os.environ.get("LLM_API_MODE", "").strip().lower()
-            content["llm_mode"] = mode if mode in {"local", "api"} else _api_mode(api_url)
+            content["llm_mode"] = _api_mode(api_url)
             return payload_json, content
 
     result = _template(payload)
@@ -255,4 +262,4 @@ def generate_brief(payload, scanner=None, *, auditor=None, timeout=8):
     return payload_json, result
 
 
-__all__ = ["SYSTEM_PROMPT", "generate_brief"]
+__all__ = ["SYSTEM_PROMPT", "generate_brief", "serialize_payload"]

@@ -62,6 +62,9 @@ def prepare_rows(
                 "attack_type": truth["attack_type"],
                 "is_attack": truth["is_attack"],
                 "hop_index": truth["hop_index"],
+                # Evaluation-only ground truth. This never enters the feature
+                # vector or the bank-to-mesh message.
+                "ground_truth_amount": float(truth["amount"]),
                 "features": blind_message["f"] + mesh_feature_vector(linked),
                 "blind_message": blind_message,
                 "linked": linked,

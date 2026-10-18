@@ -40,7 +40,7 @@ class ClientResponse:
 def test_two_hop_walking_skeleton_emits_hold_to_local_bank(monkeypatch, tmp_path):
     key = b"walking-skeleton-test-key"
     monkeypatch.setenv("CONSORTIUM_KEY", key.decode("ascii"))
-    monkeypatch.setenv("LLM_API_URL", "")
+    monkeypatch.setenv("LLM_URL", "")
     monkeypatch.setenv("LLM_API_KEY", "")
     trained = train_and_save(
         config=GeneratorConfig(event_count=6_000),
@@ -50,7 +50,13 @@ def test_two_hop_walking_skeleton_emits_hold_to_local_bank(monkeypatch, tmp_path
     test_rows = sorted(trained["splits"]["test"], key=lambda row: (row["ts_ms"], row["event_id"]))
     metrics = _detection_metrics(trained["model"], test_rows)
     assert 0.0 <= metrics["recall_at_1pct_fpr"] <= 1.0
-    assert len(_decision_latencies(trained["model"], test_rows[:30])) == 30
+    assert 0.0 <= metrics["zero_day_slow_drip_recall_at_1pct_fpr"] <= 1.0
+    assert metrics["value_still_stoppable_pct"] >= 0.0
+    assert metrics["time_to_flag_ms"] >= 0.0
+    assert metrics["alert_to_next_hop_gap_ms"] >= 0.0
+    decision_latencies = _decision_latencies(trained["model"], test_rows[:30])
+    assert 0 < len(decision_latencies) <= 30
+    assert all(latency >= 0.0 for latency in decision_latencies)
     validation_chains = _validation_chains(trained["splits"]["B"])
     for name, indices in ABLATIONS.items():
         fitted = _fit_ablation(trained["splits"], validation_chains, indices, 17)

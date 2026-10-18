@@ -206,6 +206,8 @@ def generate(
                 "attack_type": attack_type,
                 "hop_index": int(hop_index),
                 "is_attack": bool(is_attack),
+                "ts_ms": int(ts_ms),
+                "amount": round(float(amount), 2),
             }
         )
 

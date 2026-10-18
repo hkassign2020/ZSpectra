@@ -8,6 +8,7 @@ import os
 import pickle
 import secrets
 import threading
+import time
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable
@@ -19,7 +20,7 @@ from audit import Auditor, CanaryScanner
 from audit.logging import ScannerLogHandler
 from mesh.chain import ChainLinker
 from mesh.features import mesh_feature_vector
-from mesh.llm import generate_brief
+from mesh.llm import generate_brief, serialize_payload
 
 
 def _scanner_from_environment() -> CanaryScanner:
@@ -68,9 +69,11 @@ def create_app(
     state: dict[str, Any] = {
         "events": [],
         "alerts": [],
+        "alert_revisions": {},
         "alerted_chains": set(),
         "last_prompt": None,
         "negative_control": None,
+        "decision_latencies_ms": [],
     }
 
     app = Flask(__name__)
@@ -116,13 +119,11 @@ def create_app(
             "anom": float(score["anom"]),
             "evidence": evidence,
         }
-        auditor.check("mesh_to_llm", llm_payload)
-        scanner.scan("mesh_to_llm", json.dumps(llm_payload, separators=(",", ":")))
-        audit_handler.record(f"boundary audit allowed mesh_to_llm chain depth={linked['hop_depth']}")
-        prompt_json, brief = llm_generator(llm_payload, scanner=scanner)
+        # Validate and freeze the dashboard prompt before making the alert visible.
+        # The async sender rechecks this exact serialization through the auditor and scanner.
+        prompt_json = serialize_payload(llm_payload)
         state["last_prompt"] = prompt_json
         hold_rec = {"bid": linked["dst_bid"], "alert_id": alert_id}
-        delivery = route_hold(hold_rec["bid"], alert_id)
         return {
             "alert_id": alert_id,
             "type": kind,
@@ -134,13 +135,54 @@ def create_app(
             "evidence": evidence,
             "llm_payload": llm_payload,
             "llm_prompt": prompt_json,
-            "llm_brief": brief,
+            "llm_brief": None,
+            "llm_status": "pending",
             "hold_rec": hold_rec,
-            "hold_delivery": delivery,
+            "hold_delivery": {bank: "pending" for bank in bank_urls},
         }
+
+    def start_llm_job(alert_id: str, revision: int, payload: dict[str, Any], prompt_json: str) -> None:
+        def generate() -> None:
+            try:
+                returned_prompt, brief = llm_generator(
+                    payload,
+                    scanner=scanner,
+                    auditor=auditor,
+                    timeout=60,
+                    prompt_json=prompt_json,
+                )
+                if returned_prompt != prompt_json:
+                    raise ValueError("LLM generator changed the dashboard prompt")
+                if not isinstance(brief, dict) or brief.get("llm_mode") not in {"local", "api", "template"}:
+                    raise ValueError("LLM generator returned an invalid llm_mode")
+                audit_handler.record(
+                    f"boundary audit allowed mesh_to_llm chain depth={len(payload['chain'])}"
+                )
+            except Exception:
+                app.logger.exception("LLM brief generation failed; using a safe template")
+                brief = {
+                    "summary": "A model brief was unavailable; review the blind evidence.",
+                    "suspected_pattern": "unclassified transfer pattern",
+                    "risk_level": "unclassified",
+                    "recommended_action": "Review the alert; the owning bank makes any hold decision.",
+                    "limits": "The model response was unavailable. BID values are pseudonymous and linkable.",
+                    "llm_mode": "template",
+                }
+                scanner.scan("llm_response", json.dumps(brief, sort_keys=True, separators=(",", ":")))
+
+            with lock:
+                if state["alert_revisions"].get(alert_id) != revision:
+                    return
+                current = next((item for item in state["alerts"] if item["alert_id"] == alert_id), None)
+                if current is not None:
+                    current["llm_brief"] = brief
+                    current["llm_status"] = "complete"
+
+        threading.Thread(target=generate, name=f"llm-{alert_id}", daemon=True).start()
 
     @app.post("/ingest")
     def ingest() -> Any:
+        received_ns = time.perf_counter_ns()
         raw_body = request.get_data(cache=True, as_text=True)
         message = request.get_json(silent=True)
         scan_text = (
@@ -158,6 +200,8 @@ def create_app(
             f"boundary audit allowed bank_to_mesh bank={message['bank']} seq={message['seq']}"
         )
 
+        llm_job = None
+        hold_job = None
         with lock:
             linked = linker.add(message)
             vector = message["f"] + mesh_feature_vector(linked)
@@ -189,6 +233,15 @@ def create_app(
                     "CROSS_BANK_MULE_CASCADE",
                     alert_id=prior_alert["alert_id"] if prior_alert else None,
                 )
+                revision = state["alert_revisions"].get(alert["alert_id"], 0) + 1
+                state["alert_revisions"][alert["alert_id"]] = revision
+                llm_job = (
+                    alert["alert_id"],
+                    revision,
+                    json.loads(alert["llm_prompt"]),
+                    alert["llm_prompt"],
+                )
+                hold_job = (alert["alert_id"], revision, alert["target_bid"])
                 if prior_alert:
                     state["alerts"][state["alerts"].index(prior_alert)] = alert
                 else:
@@ -198,6 +251,11 @@ def create_app(
                 alert = handle_alert(linked, score, vector, "UNKNOWN_ANOMALY")
                 state["alerted_chains"].add(chain_id)
                 state["alerts"].append(alert)
+
+            if alert is not None:
+                state["decision_latencies_ms"].append(
+                    (time.perf_counter_ns() - received_ns) / 1_000_000.0
+                )
 
             record = {
                 "message": dict(message),
@@ -214,6 +272,18 @@ def create_app(
             if len(state["events"]) > 500:
                 del state["events"][:-500]
             publish(record)
+
+        # Let /state serve the new alert before any model or bank network call completes.
+        if llm_job is not None:
+            start_llm_job(*llm_job)
+        if hold_job is not None:
+            alert_id, revision, target_bid = hold_job
+            delivery = route_hold(target_bid, alert_id)
+            with lock:
+                if state["alert_revisions"].get(alert_id) == revision:
+                    current = next((item for item in state["alerts"] if item["alert_id"] == alert_id), None)
+                    if current is not None:
+                        current["hold_delivery"] = delivery
 
         return jsonify({"accepted": True, "alert": alert}), 200
 
@@ -237,6 +307,12 @@ def create_app(
                     },
                 }
             )
+
+    @app.get("/metrics")
+    def metrics() -> Any:
+        """Expose local benchmark measurements, separate from wire messages."""
+        with lock:
+            return jsonify({"decision_latency_ms": list(state["decision_latencies_ms"])})
 
     @app.get("/stream")
     def stream() -> Response:
@@ -264,9 +340,11 @@ def create_app(
             linker.reset()
             state["events"].clear()
             state["alerts"].clear()
+            state["alert_revisions"].clear()
             state["alerted_chains"].clear()
             state["last_prompt"] = None
             state["negative_control"] = None
+            state["decision_latencies_ms"].clear()
             scanner.reset()
             auditor.reset()
             audit_handler.reset()

@@ -33,6 +33,7 @@ ABLATIONS = {
     "raw_plus_compression": tuple(range(13)),
     "compression_only": tuple(range(5, 8)) + tuple(range(8, 13)),
 }
+LOAD_SPEED_FACTORS = (1, 5, 10)
 
 
 def _distribution(values: Iterable[float]) -> dict[str, float | int]:
@@ -167,28 +168,86 @@ def _detection_metrics(model: Any, rows: list[dict[str, Any]]) -> dict[str, floa
         sum(bool(row["is_attack"]) for row in predicted_chains.values())
         / max(1, len(predicted_chains))
     )
+    cascade_outcomes = _cascade_outcome_metrics(rows, scores, model.thresholds)
     return {
         "recall_at_1pct_fpr": float(np.mean(cascade_predictions[cascade])),
         "fpr_observed": float(np.mean(cascade_predictions[normal])),
         "cascades_flagged_at_hop2_pct": 100.0 * float(np.mean(cascade_predictions[hop_two])),
         "zero_day_slow_drip_recall_at_1pct_fpr": float(np.mean(anomaly_predictions[slow])),
         "alert_precision": precision,
+        "value_still_stoppable_pct": float(statistics.mean(cascade_outcomes["value_still_stoppable_pct"])),
+        "time_to_flag_ms": float(statistics.mean(cascade_outcomes["time_to_flag_ms"])),
+        "alert_to_next_hop_gap_ms": float(statistics.mean(cascade_outcomes["alert_to_next_hop_gap_ms"])),
     }
+
+
+def _cascade_outcome_metrics(
+    rows: list[dict[str, Any]],
+    scores: list[dict[str, float]],
+    thresholds: dict[str, float],
+) -> dict[str, list[float]]:
+    """Measure alert timing and remaining transfer value against held-out truth."""
+    by_chain: dict[str, list[tuple[dict[str, Any], dict[str, float]]]] = {}
+    for row, score in zip(rows, scores):
+        if row["attack_type"] == "CROSS_BANK_MULE_CASCADE":
+            by_chain.setdefault(row["chain_id"], []).append((row, score))
+
+    outcomes: dict[str, list[float]] = {
+        "value_still_stoppable_pct": [],
+        "time_to_flag_ms": [],
+        "alert_to_next_hop_gap_ms": [],
+    }
+    for chain in by_chain.values():
+        chain.sort(key=lambda pair: (pair[0]["hop_index"], pair[0]["ts_ms"], pair[0]["event_id"]))
+        hop_one = next((row for row, _score in chain if row["hop_index"] == 1), None)
+        if hop_one is None:
+            continue
+        alert_rows = [
+            row
+            for row, score in chain
+            if (
+                row["linked"]["hop_depth"] >= 2
+                and score["p_cascade"] >= thresholds["T_cascade"]
+            )
+            or score["anom"] >= thresholds["T_anom"]
+        ]
+        if not alert_rows:
+            continue
+        alert_row = min(alert_rows, key=lambda row: (row["ts_ms"], row["hop_index"], row["event_id"]))
+        later_hops = [row for row, _score in chain if row["hop_index"] > alert_row["hop_index"]]
+        first_amount = float(hop_one["ground_truth_amount"])
+        if first_amount <= 0:
+            continue
+        remaining_value = sum(float(row["ground_truth_amount"]) for row in later_hops)
+        outcomes["value_still_stoppable_pct"].append(100.0 * remaining_value / first_amount)
+        outcomes["time_to_flag_ms"].append(float(alert_row["ts_ms"] - hop_one["ts_ms"]))
+        if later_hops:
+            next_hop = min(later_hops, key=lambda row: (row["ts_ms"], row["hop_index"], row["event_id"]))
+            outcomes["alert_to_next_hop_gap_ms"].append(float(next_hop["ts_ms"] - alert_row["ts_ms"]))
+
+    if not outcomes["value_still_stoppable_pct"] or not outcomes["time_to_flag_ms"]:
+        raise ValueError("test split contains no flagged cascade chains for timing/value metrics")
+    if not outcomes["alert_to_next_hop_gap_ms"]:
+        raise ValueError("flagged test cascades have no later hop for gap measurement")
+    return outcomes
 
 
 def _decision_latencies(model: Any, rows: list[dict[str, Any]]) -> list[float]:
     ordered = sorted(rows, key=lambda row: (row["ts_ms"], row["event_id"]))
     app = create_app(models=model, bank_urls={}, scanner=CanaryScanner())
     client = app.test_client()
-    latencies = []
-    with patch.dict(os.environ, {"LLM_API_URL": "", "LLM_API_KEY": ""}):
+    latencies: list[float] = []
+    observed_count = 0
+    with patch.dict(os.environ, {"LLM_URL": "", "LLM_API_KEY": ""}):
         for row in ordered:
-            started = time.perf_counter_ns()
             response = client.post("/ingest", json=row["blind_message"])
-            elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000.0
             if response.status_code != 200:
                 raise RuntimeError("in-process mesh rejected an evaluation event")
-            latencies.append(elapsed_ms)
+            measurements = client.get("/metrics").json["decision_latency_ms"]
+            latencies.extend(float(value) for value in measurements[observed_count:])
+            observed_count = len(measurements)
+    if not latencies:
+        raise RuntimeError("the evaluation split produced no alert decision latency samples")
     return latencies
 
 
@@ -223,40 +282,67 @@ def _host_metadata() -> dict[str, Any]:
     }
 
 
-def _live_e2e(repeats: int, dashboard_url: str, replayer_url: str, token: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _live_load_test(
+    repeats: int,
+    dashboard_url: str,
+    replayer_url: str,
+    token: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     if not token:
-        raise RuntimeError("REPLAY_TOKEN is required to measure live end-to-end hold delivery")
-    samples = []
+        raise RuntimeError("REPLAY_TOKEN is required to measure live replay and hold delivery")
+    if repeats < 1:
+        raise ValueError("live replay repeat count must be positive")
+    decision_latency_by_speed: dict[str, Any] = {}
+    end_to_end_by_speed: dict[str, Any] = {}
     audit_before_control = {}
     negative_control_caught = False
-    for index in range(repeats):
-        reset_response = requests.post(f"{dashboard_url}/api/reset", json={}, timeout=30)
-        reset_response.raise_for_status()
-        response = requests.post(
-            f"{replayer_url}/benchmark/heist",
-            headers={"X-Replay-Token": token},
-            json={},
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("alert_received") or not data.get("hold_delivered"):
-            raise RuntimeError("the live heist did not deliver its hop-two hold recommendation")
-        samples.append(float(data["end_to_end_ms"]))
-        if index == repeats - 1:
-            audit_response = requests.get(f"{dashboard_url}/api/audit", timeout=15)
-            audit_response.raise_for_status()
-            audit_before_control = audit_response.json()
-            control_response = requests.post(f"{dashboard_url}/api/negative-control", json={}, timeout=15)
-            control_response.raise_for_status()
-            negative_control_caught = control_response.json().get("negative_control") == "caught"
-    return _distribution(samples), {
+    for speed_factor in LOAD_SPEED_FACTORS:
+        decision_samples: list[float] = []
+        end_to_end_samples: list[float] = []
+        for _index in range(repeats):
+            reset_response = requests.post(f"{dashboard_url}/api/reset", json={}, timeout=30)
+            reset_response.raise_for_status()
+            response = requests.post(
+                f"{replayer_url}/benchmark/heist",
+                headers={"X-Replay-Token": token},
+                json={"speed_factor": speed_factor},
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("alert_received") or not data.get("hold_delivered"):
+                raise RuntimeError("the live heist did not deliver its hop-two hold recommendation")
+            end_to_end_samples.append(float(data["end_to_end_ms"]))
+            metrics_response = requests.get(f"{dashboard_url}/api/metrics", timeout=15)
+            metrics_response.raise_for_status()
+            metric_values = metrics_response.json().get("decision_latency_ms", [])
+            if not metric_values:
+                raise RuntimeError("mesh did not record a decision latency for the live alert")
+            decision_samples.extend(float(value) for value in metric_values)
+        label = f"{speed_factor}x"
+        decision_latency_by_speed[label] = _distribution(decision_samples)
+        end_to_end_by_speed[label] = _distribution(end_to_end_samples)
+
+    audit_response = requests.get(f"{dashboard_url}/api/audit", timeout=15)
+    audit_response.raise_for_status()
+    audit_before_control = audit_response.json()
+    control_response = requests.post(f"{dashboard_url}/api/negative-control", json={}, timeout=15)
+    control_response.raise_for_status()
+    negative_control_caught = control_response.json().get("negative_control") == "caught"
+    audit = {
         "messages_scanned": int(audit_before_control.get("messages_scanned", 0)),
         "bytes_scanned": int(audit_before_control.get("bytes_scanned", 0)),
         "canary_hits_real_run": int(audit_before_control.get("canary_hits", 0)),
         "validator_blocks": int(audit_before_control.get("validator_blocks", 0)),
         "negative_control_caught": negative_control_caught,
     }
+    load_test = {
+        "replay_speed_factors": list(LOAD_SPEED_FACTORS),
+        "repeats_per_speed": repeats,
+        "decision_latency_ms": decision_latency_by_speed,
+        "end_to_end_ms": end_to_end_by_speed,
+    }
+    return end_to_end_by_speed["10x"], load_test, audit
 
 
 def evaluate(
@@ -295,7 +381,7 @@ def evaluate(
 
     dashboard_url = os.environ.get("DASH_URL", "http://127.0.0.1:8080").rstrip("/")
     replayer_url = os.environ.get("REPLAYER_URL_HOST", "http://127.0.0.1:8081").rstrip("/")
-    end_to_end, audit = _live_e2e(
+    end_to_end, load_test, audit = _live_load_test(
         live_repeats,
         dashboard_url,
         replayer_url,
@@ -307,25 +393,23 @@ def evaluate(
     detection = {
         "recall_at_1pct_fpr": _summary(item["recall_at_1pct_fpr"] for item in per_seed),
         "cascades_flagged_at_hop2_pct": _summary(item["cascades_flagged_at_hop2_pct"] for item in per_seed),
-        "zero_day_slow_drip_recall_at_1pct_fpr": {
-            "mean": float(statistics.mean(item["zero_day_slow_drip_recall_at_1pct_fpr"] for item in per_seed)),
-            "std": float(statistics.pstdev(item["zero_day_slow_drip_recall_at_1pct_fpr"] for item in per_seed)),
-        },
+        "zero_day_slow_drip_recall_at_1pct_fpr": _summary(
+            item["zero_day_slow_drip_recall_at_1pct_fpr"] for item in per_seed
+        ),
         "alert_precision": _summary(item["alert_precision"] for item in per_seed),
+        "value_still_stoppable_pct": _summary(item["value_still_stoppable_pct"] for item in per_seed),
+        "time_to_flag_ms": _summary(item["time_to_flag_ms"] for item in per_seed),
+        "alert_to_next_hop_gap_ms": _summary(item["alert_to_next_hop_gap_ms"] for item in per_seed),
     }
     result_document = {
         "meta": meta,
         "sensor_latency_us": _distribution(sensor_latencies),
         "decision_latency_ms": _distribution(decision_latencies),
         "end_to_end_ms": end_to_end,
+        "load_test": load_test,
         "detection": detection,
         "ablation": {
-            name: {
-                "recall_at_1pct_fpr": {
-                    "mean": float(statistics.mean(values)),
-                    "std": float(statistics.pstdev(values)),
-                }
-            }
+            name: {"recall_at_1pct_fpr": _summary(values)}
             for name, values in ablation_values.items()
         },
         "zlib_bench": zlib_results,

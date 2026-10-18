@@ -37,22 +37,21 @@ export CONSORTIUM_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32)
 
 Open `http://127.0.0.1:8080`. Use `./run.sh status` to check the services, `./run.sh reset` to clear demo state, and `./run.sh stop` to stop the services. Process-mode logs are under `.run/logs/`.
 
-`./run.sh eval` writes observed measurements to `results.json`; its default evaluation uses `DEMO_EVENTS=20000`, three seeds, and ten live end-to-end repeats for latency percentiles. Override those values with `DEMO_EVENTS`, `EVAL_SEEDS`, and `EVAL_LIVE_REPEATS`. Ten repeats give a basic spread estimate; p99 is still a rough estimate at this sample count. The evaluation is still a synthetic demonstration, not a production efficacy result.
+`./run.sh eval` writes observed measurements to `results.json`; its default evaluation uses `DEMO_EVENTS=20000`, three seeds, and ten live repeats at each replay speed (1x, 5x, and 10x). It reports alert decision latency and end-to-end hold-delivery latency at each speed, plus remaining transfer value and alert timing from held-out ground truth. Override the data size, seed count, and repeats with `DEMO_EVENTS`, `EVAL_SEEDS`, and `EVAL_LIVE_REPEATS`. Ten repeats give a basic spread estimate; p99 is still rough at this sample count. The evaluation is a synthetic demonstration, not a production efficacy result.
 
 ## LLM brief
 
-The mesh uses a template when `LLM_API_URL` is unset or the configured service fails. The live adapter uses the OpenAI-style chat-completions request supported by `llama.cpp`. If that matches the Lab 2 server, configure its endpoint and model name before starting:
+The mesh calls the OpenAI-compatible chat endpoint at `LLM_URL` with `LLM_MODEL` and optional `LLM_API_KEY`. The default endpoint is the Lab 2 service on the host at `http://host.docker.internal:8082/v1/chat/completions` in Docker mode, and `http://127.0.0.1:8082/v1/chat/completions` in process mode. The request uses a 60-second timeout, `max_tokens=150`, and `temperature=0.2`; failures use a labeled template brief.
 
 ```sh
-export LLM_API_URL=http://127.0.0.1:8082/v1/chat/completions
-export LLM_API_MODEL=your-loaded-granite-model
-export LLM_API_MODE=local
+export LLM_URL=http://127.0.0.1:8082/v1/chat/completions
+export LLM_MODEL=your-loaded-granite-model
 ZSPECTRA_MODE=process ./run.sh demo
 ```
 
-For Docker mode, set `LLM_API_URL` to an address reachable from the mesh container (for example, another service on `zs-net`); `127.0.0.1` inside the mesh container refers to the mesh container itself. The caller sends the system instructions and only the validated mesh-to-LLM JSON payload, requests a JSON response, and scans the prompt and response. `LLM_API_KEY` is optional for a local unauthenticated server and is passed only to the mesh process/container. The dashboard labels successful local-server output as `local` and labels template output as `template`.
+The Docker mesh container gets `--add-host=host.docker.internal:host-gateway`, and `run.sh` sets `LLM_URL` to that host endpoint. The exact compact blind JSON shown in the dashboard is sent as the user message; the separate system message contains the safety instructions. The payload is validated and scanned before sending, and the response is scanned before display. `llm_mode` is `local`, `api`, or `template`; the dashboard shows a pending alert immediately and fills in the brief when generation completes. `LLM_API_KEY` is passed only to the mesh process/container.
 
-This adapter expects the Lab 2 server to expose `POST /v1/chat/completions`. If the lab uses a different route or request shape, configure its compatible endpoint or provide that lab's connection example before claiming that exact integration is verified.
+The endpoint must expose `POST /v1/chat/completions` with the OpenAI chat-completions request shape.
 
 ## Results and limits
 

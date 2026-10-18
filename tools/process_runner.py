@@ -22,7 +22,7 @@ PID_FILE = RUN_DIR / "processes.json"
 
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
-    for name in ("CONSORTIUM_KEY", "LLM_API_KEY", "REPLAY_TOKEN", "OPERATOR_TOKEN"):
+    for name in ("CONSORTIUM_KEY", "LLM_URL", "LLM_MODEL", "LLM_API_KEY", "REPLAY_TOKEN", "OPERATOR_TOKEN"):
         env.pop(name, None)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
@@ -56,9 +56,13 @@ def _services() -> list[tuple[str, str, int, dict[str, str]]]:
             "BANK_B_URL": bank_urls["B"],
             "BANK_C_URL": bank_urls["C"],
             "PORT": "8000",
+            "LLM_URL": os.environ.get(
+                "LLM_URL", "http://127.0.0.1:8082/v1/chat/completions"
+            ),
+            "LLM_MODEL": os.environ.get("LLM_MODEL", "local-model"),
         }
     )
-    for name in ("LLM_API_URL", "LLM_API_KEY", "LLM_API_MODEL", "LLM_API_MODE"):
+    for name in ("LLM_API_KEY",):
         if name in os.environ:
             mesh_env[name] = os.environ[name]
     services.append(("mesh", "mesh.service", 8000, mesh_env))

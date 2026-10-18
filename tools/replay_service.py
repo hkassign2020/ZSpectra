@@ -78,6 +78,20 @@ def create_app(
     def benchmark_heist():
         if not authorized():
             return jsonify({"error": "replay authorization required"}), 403
+        payload = request.get_json(silent=True)
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "benchmark options must be an object"}), 400
+        speed_value = payload.get("speed_factor", benchmark_speed_factor)
+        if isinstance(speed_value, bool):
+            return jsonify({"error": "speed_factor must be one of 1, 5, or 10"}), 400
+        try:
+            requested_speed = float(speed_value)
+        except (TypeError, ValueError):
+            return jsonify({"error": "speed_factor must be one of 1, 5, or 10"}), 400
+        if requested_speed not in {1.0, 5.0, 10.0}:
+            return jsonify({"error": "speed_factor must be one of 1, 5, or 10"}), 400
         if not lock.acquire(blocking=False):
             return jsonify({"error": "a replay is already running"}), 409
         measurement: dict[str, Any] = {}
@@ -101,7 +115,7 @@ def create_app(
             run_heist(
                 _read_accounts(accounts_path),
                 bank_urls,
-                speed_factor=benchmark_speed_factor,
+                speed_factor=requested_speed,
                 post=measured_post,
             )
             if "end_to_end_ms" not in measurement:

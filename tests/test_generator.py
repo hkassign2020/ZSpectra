@@ -67,11 +67,19 @@ class GeneratorTests(unittest.TestCase):
 
         self.assertEqual(
             set(ground_truth[0]),
-            {"event_id", "chain_id", "attack_type", "hop_index", "is_attack"},
+            {"event_id", "chain_id", "attack_type", "hop_index", "is_attack", "ts_ms", "amount"},
         )
         self.assertEqual(
             [event["event_id"] for event in raw_events],
             [truth["event_id"] for truth in ground_truth],
+        )
+        event_by_id = {event["event_id"]: event for event in raw_events}
+        self.assertTrue(
+            all(
+                truth["ts_ms"] == event_by_id[truth["event_id"]]["ts_ms"]
+                and truth["amount"] == event_by_id[truth["event_id"]]["amount"]
+                for truth in ground_truth
+            )
         )
         self.assertEqual(len({event["event_id"] for event in raw_events}), len(raw_events))
         self.assertTrue(canary_list)

@@ -64,6 +64,15 @@ def create_app(
         except (requests.RequestException, ValueError):
             return jsonify({"error": "mesh state unavailable"}), 502
 
+    @app.get("/api/metrics")
+    def metrics():
+        try:
+            response = requests.get(f"{mesh_url}/metrics", timeout=5)
+            response.raise_for_status()
+            return jsonify(response.json())
+        except (requests.RequestException, ValueError):
+            return jsonify({"error": "mesh metrics unavailable"}), 502
+
     @app.get("/api/platform")
     def platform():
         return jsonify(platform_collector())

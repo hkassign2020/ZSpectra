@@ -41,7 +41,10 @@ def test_benchmark_route_reports_measured_hop_two_delivery(monkeypatch, tmp_path
                 }
             }
 
+    speed_factors = []
+
     def fake_run_heist(accounts, bank_urls, *, speed_factor, post):
+        speed_factors.append(speed_factor)
         post("http://bank-b/event", json={"event_id": "HEIST-B-TO-C"}, timeout=10)
         return [{"accepted": True}]
 
@@ -52,9 +55,42 @@ def test_benchmark_route_reports_measured_hop_two_delivery(monkeypatch, tmp_path
         token="control-token",
     ).test_client()
 
-    response = client.post("/benchmark/heist", headers={"X-Replay-Token": "control-token"})
+    response = client.post(
+        "/benchmark/heist",
+        headers={"X-Replay-Token": "control-token"},
+        json={"speed_factor": 5},
+    )
 
     assert response.status_code == 200
     assert response.json["alert_received"] is True
     assert response.json["hold_delivered"] is True
     assert isinstance(response.json["end_to_end_ms"], float)
+    assert speed_factors == [5.0]
+
+
+def test_benchmark_route_rejects_unsupported_speed_factor(tmp_path):
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text('{"A":{},"B":{},"C":{}}', encoding="utf-8")
+    client = create_app(accounts_path=accounts_path, token="control-token").test_client()
+
+    response = client.post(
+        "/benchmark/heist",
+        headers={"X-Replay-Token": "control-token"},
+        json={"speed_factor": 2},
+    )
+
+    assert response.status_code == 400
+
+
+def test_benchmark_route_rejects_boolean_speed_factor(tmp_path):
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text('{"A":{},"B":{},"C":{}}', encoding="utf-8")
+    client = create_app(accounts_path=accounts_path, token="control-token").test_client()
+
+    response = client.post(
+        "/benchmark/heist",
+        headers={"X-Replay-Token": "control-token"},
+        json={"speed_factor": True},
+    )
+
+    assert response.status_code == 400

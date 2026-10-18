@@ -30,8 +30,16 @@ def test_only_the_mesh_image_installs_numpy_and_scikit_learn():
         assert "requirements-core.txt" in dockerfile
         assert "requirements-ml.txt" not in dockerfile
     mesh = (ROOT / "docker" / "Dockerfile.mesh").read_text(encoding="utf-8")
-    assert "requirements-core.txt" in mesh
-    assert "requirements-ml.txt" in mesh
+    if "requirements-core.txt" in mesh:
+        assert "requirements-ml.txt" in mesh
+    else:
+        # LinuxONE may use distro-provided wheels instead of pip installs.
+        normalized = mesh.lstrip()
+        assert normalized.startswith("FROM ubuntu:")
+        assert "python3-numpy" in mesh
+        assert "python3-sklearn" in mesh
+        assert "python3-flask" in mesh
+        assert "python3-requests" in mesh
 
 
 def test_docker_context_excludes_local_data_and_mesh_receives_only_the_digest_index():
@@ -41,6 +49,8 @@ def test_docker_context_excludes_local_data_and_mesh_receives_only_the_digest_in
     mesh_section = runner.split('docker run -d --name zs-mesh', 1)[1].split("for bank in A B C", 1)[0]
     replayer_section = runner.split('docker run -d --name zs-replayer', 1)[1].split("start_dashboard()", 1)[0]
     assert "canary-index.json:/data/canary-index.json:ro" in mesh_section
+    assert "--add-host=host.docker.internal:host-gateway" in mesh_section
+    assert "LLM_URL=http://host.docker.internal:8082/v1/chat/completions" in mesh_section
     assert "canaries.json" not in mesh_section
     assert "demo-data:/data" not in replayer_section
     assert "accounts/accounts-" not in replayer_section

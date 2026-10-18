@@ -51,3 +51,16 @@ def test_heist_button_forwards_only_a_control_request(monkeypatch):
         "payload": {},
     }
     assert "event" not in captured["payload"]
+
+
+def test_metrics_endpoint_proxies_mesh_decision_measurements(monkeypatch):
+    monkeypatch.setattr(
+        "dash.app.requests.get",
+        lambda url, timeout: FakeResponse({"decision_latency_ms": [1.25]}),
+    )
+    app = create_app(mesh_url="http://mesh:8000")
+
+    response = app.test_client().get("/api/metrics")
+
+    assert response.status_code == 200
+    assert response.json == {"decision_latency_ms": [1.25]}

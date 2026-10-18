@@ -128,11 +128,12 @@ start() {
     docker rm -f "$name" >/dev/null 2>&1 || true
   done
 
-  docker run -d --name zs-mesh --network "$NETWORK" --network-alias mesh --restart unless-stopped \
+  docker run -d --name zs-mesh --network "$NETWORK" --network-alias mesh --add-host=host.docker.internal:host-gateway --restart unless-stopped \
     -e MODEL_FILE=/models/fraud_models.pkl \
     -e THRESHOLDS_FILE=/models/thresholds.json \
     -e CANARY_INDEX_FILE=/data/canary-index.json \
-    -e LLM_API_URL -e LLM_API_KEY -e LLM_API_MODEL -e LLM_API_MODE \
+    -e LLM_URL=http://host.docker.internal:8082/v1/chat/completions \
+    -e LLM_MODEL="${LLM_MODEL:-local-model}" -e LLM_API_KEY \
     -e BANK_A_URL=http://bank-a:8001 -e BANK_B_URL=http://bank-b:8002 -e BANK_C_URL=http://bank-c:8003 \
     -v "$ROOT_DIR/models:/models:ro" \
     -v "$ROOT_DIR/demo-data/canary-index.json:/data/canary-index.json:ro" \
