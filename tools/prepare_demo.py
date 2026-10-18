@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from bank.sensor import compression_profile
 from gen.generator import GeneratorConfig, generate
 from tools.prepare_canary_index import write_digest_index
 from train import train_and_save
@@ -30,8 +31,11 @@ def demo_ready(
     key_text: str,
     output_dir: str | Path = "demo-data",
     model_dir: str | Path = "models",
+    *,
+    event_count: int = 20_000,
+    seed: int = 7,
 ) -> bool:
-    """Check that artifacts exist and were prepared for the current key."""
+    """Check artifacts against key, event size, seed, and zlib profile."""
     if not key_text:
         return False
     output = Path(output_dir)
@@ -46,6 +50,7 @@ def demo_ready(
         output / "accounts" / "accounts-C.json",
         models / "fraud_models.pkl",
         models / "thresholds.json",
+        models / "training.json",
     )
     if not all(path.is_file() for path in required):
         return False
@@ -54,7 +59,17 @@ def demo_ready(
         stored = required[0].read_text(encoding="ascii").strip()
     except (OSError, UnicodeDecodeError):
         return False
-    return stored == expected
+    if stored != expected:
+        return False
+    try:
+        training = json.loads(required[-1].read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return (
+        training.get("event_count") == event_count
+        and training.get("seed") == seed
+        and training.get("compression_profile") == compression_profile()
+    )
 
 
 def prepare_demo(
@@ -122,7 +137,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.check:
         key_text = os.environ.get("CONSORTIUM_KEY", "")
-        return 0 if demo_ready(key_text, args.output_dir, args.model_dir) else 1
+        return 0 if demo_ready(
+            key_text,
+            args.output_dir,
+            args.model_dir,
+            event_count=args.events,
+            seed=args.seed,
+        ) else 1
     summary = prepare_demo(args.output_dir, args.model_dir, event_count=args.events, seed=args.seed)
     print(json.dumps(summary, sort_keys=True))
     return 0

@@ -53,12 +53,39 @@ prepare() {
   fi
   export REPLAY_TOKEN
   if ! "$PYTHON_BIN" -m tools.prepare_demo --check \
+       --events "${DEMO_EVENTS:-20000}" --seed "${DEMO_SEED:-7}" \
        --output-dir "$ROOT_DIR/demo-data" --model-dir "$ROOT_DIR/models" >/dev/null 2>&1; then
     "$PYTHON_BIN" -m tools.prepare_demo \
       --events "${DEMO_EVENTS:-20000}" \
+      --seed "${DEMO_SEED:-7}" \
       --output-dir "$ROOT_DIR/demo-data" \
       --model-dir "$ROOT_DIR/models"
   fi
+}
+
+configure_compression() {
+  case "${ZSPECTRA_DFLTCC:-0}" in
+    0)
+      unset DFLTCC DFLTCC_LEVEL_MASK
+      ;;
+    1)
+      if [ "$PLATFORM" != s390x ]; then
+        printf '%s\n' 'ZSPECTRA_DFLTCC=1 is supported only on an s390x host.' >&2
+        exit 2
+      fi
+      DFLTCC=1
+      DFLTCC_LEVEL_MASK=${ZSPECTRA_DFLTCC_LEVEL_MASK:-0x007e}
+      export DFLTCC DFLTCC_LEVEL_MASK
+      if ! "$PYTHON_BIN" "$ROOT_DIR/tools/platform_proof.py" --require-dfltcc >/dev/null; then
+        printf '%s\n' 'DFLTCC requested, but CPU or loaded zlib support was not verified.' >&2
+        exit 2
+      fi
+      ;;
+    *)
+      printf '%s\n' 'ZSPECTRA_DFLTCC must be 0 or 1.' >&2
+      exit 2
+      ;;
+  esac
 }
 
 build_images() {
@@ -113,6 +140,7 @@ start() {
     exit 2
   fi
   select_runtime
+  configure_compression
   "$PYTHON_BIN" "$ROOT_DIR/tools/linuxone_preflight.py"
   prepare
   if [ "$RUNTIME_MODE" = process ]; then
@@ -143,13 +171,15 @@ start() {
     case "$bank" in A) port=8001 ;; B) port=8002 ;; C) port=8003 ;; esac
     bank_alias=$(printf '%s' "$bank" | tr '[:upper:]' '[:lower:]')
     docker run -d --name "zs-bank-$bank" --network "$NETWORK" --network-alias "bank-$bank_alias" --restart unless-stopped \
-      -e BANK_CODE="$bank" -e CONSORTIUM_KEY \
+      -e BANK_CODE="$bank" -e CONSORTIUM_KEY -e DFLTCC -e DFLTCC_LEVEL_MASK \
       -e MESH_URL=http://mesh:8000 \
       -e PORT="$port" \
       -e ACCOUNTS_FILE=/data/accounts.json \
+      -e TRAINING_METADATA_FILE=/data/training.json \
       -e CANARY_INDEX_FILE=/data/canary-index.json \
       -e OPERATOR_TOKEN \
       -v "$ROOT_DIR/demo-data/accounts/accounts-$bank.json:/data/accounts.json:ro" \
+      -v "$ROOT_DIR/models/training.json:/data/training.json:ro" \
       -v "$ROOT_DIR/demo-data/canary-index.json:/data/canary-index.json:ro" \
       zs-bank >/dev/null
   done

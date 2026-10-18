@@ -7,14 +7,15 @@ import os
 import hmac
 import logging
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from flask import Flask, jsonify, request
 import requests
 
 from audit import Auditor, CanaryScanner
 from audit.logging import ScannerLogHandler
-from bank.sensor import BlindSensor, bid_for
+from bank.sensor import BlindSensor, bid_for, compression_profile
+from runtime.http_session_pool import HttpSessionPool
 
 
 def _scanner_from_environment() -> CanaryScanner:
@@ -22,6 +23,27 @@ def _scanner_from_environment() -> CanaryScanner:
     if not index_path:
         return CanaryScanner()
     return CanaryScanner.from_index_file(index_path)
+
+
+def _validate_training_profile(path: str | Path) -> None:
+    try:
+        metadata = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("training metadata is missing or invalid") from exc
+    trained_profile = metadata.get("compression_profile")
+    if not isinstance(trained_profile, dict):
+        raise RuntimeError("training metadata has no valid compression profile")
+    current_profile = compression_profile()
+    settings = ("algorithm", "level", "dfltcc", "dfltcc_level_mask")
+    if any(trained_profile.get(name) != current_profile.get(name) for name in settings):
+        raise RuntimeError(
+            "bank compression settings differ from training; regenerate models with this runtime"
+        )
+    version_keys = ("zlib_compile_version", "zlib_runtime_version")
+    if any(trained_profile.get(name) != current_profile.get(name) for name in version_keys):
+        logging.getLogger(__name__).warning(
+            "bank zlib version differs from training; verify detection metrics on the target"
+        )
 
 
 def _account_index(accounts: Iterable[dict[str, str]], key: bytes) -> dict[str, dict[str, str]]:
@@ -56,6 +78,7 @@ def create_app(
     accounts: Iterable[dict[str, str]] | str | Path | None = None,
     scanner: CanaryScanner | None = None,
     operator_token: str | None = None,
+    http_session_factory: Callable[[], Any] | None = None,
 ) -> Flask:
     """Create a bank service; explicit args make the boundary testable."""
     bank = bank or os.environ.get("BANK_CODE")
@@ -75,6 +98,8 @@ def create_app(
     local_index = _account_index(_read_accounts(accounts), key)
     hold_state: dict[str, dict[str, str]] = {}
     operator_token = operator_token or os.environ.get("OPERATOR_TOKEN")
+    session_factory = http_session_factory or requests.Session
+    http_sessions = HttpSessionPool(session_factory)
 
     app = Flask(__name__)
     app.config.update(
@@ -97,7 +122,7 @@ def create_app(
             validator.check("bank_to_mesh", blind)
             scanner.scan("bank_to_mesh", json.dumps(blind, separators=(",", ":")))
             audit_handler.record(f"boundary audit allowed bank_to_mesh bank={bank} seq={blind['seq']}")
-            response = requests.post(f"{mesh_url}/ingest", json=blind, timeout=5)
+            response = http_sessions.post(f"{mesh_url}/ingest", json=blind, timeout=5)
             response.raise_for_status()
         except (TypeError, ValueError, KeyError):
             return jsonify({"error": "event rejected"}), 400
@@ -173,6 +198,16 @@ def create_app(
 
 
 def main() -> None:
+    training_metadata = os.environ.get("TRAINING_METADATA_FILE")
+    if training_metadata:
+        _validate_training_profile(training_metadata)
+    if os.environ.get("DFLTCC") == "1":
+        from tools.platform_proof import collect, dfltcc_ready
+
+        if not dfltcc_ready(collect()):
+            raise RuntimeError(
+                "DFLTCC was enabled, but this bank container lacks verified s390x/libz support"
+            )
     app = create_app()
     logging.getLogger("werkzeug").addHandler(
         ScannerLogHandler(app.config["SCANNER"], "audit.log")

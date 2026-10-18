@@ -6,6 +6,5 @@ __pycache__/
 models/*.pkl
 models/thresholds.json
 models/training.json
-results.json
 demo-data/
 *.log

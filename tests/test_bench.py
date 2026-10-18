@@ -2,7 +2,13 @@ import pytest
 
 pytest.importorskip("numpy")
 
-from bench.bench import _cascade_outcome_metrics, _distribution, _live_load_test, _summary
+from bench.bench import (
+    _cascade_outcome_metrics,
+    _distribution,
+    _live_load_test,
+    _render_readme_results,
+    _summary,
+)
 
 
 def test_distribution_reports_observed_percentiles_and_sample_count():
@@ -84,3 +90,55 @@ def test_live_load_test_replays_each_speed_and_summarizes_observed_alert_metrics
     assert load_test["decision_latency_ms"]["10x"]["p50"] == 2.0
     assert load_test["end_to_end_ms"]["5x"]["n"] == 2
     assert audit["negative_control_caught"] is True
+
+
+def test_readme_results_snapshot_comes_from_all_requested_result_sections():
+    document = {
+        "meta": {"host": {"arch": "x86_64"}, "seeds": [0, 1]},
+        "detection": {
+            "recall_at_1pct_fpr": {"mean": 0.8, "std": 0.1},
+            "zero_day_slow_drip_recall_at_1pct_fpr": {"mean": 0.5, "std": 0.2},
+            "value_still_stoppable_pct": {"mean": 75.0, "std": 5.0},
+            "time_to_flag_ms": {"mean": 10.0, "std": 2.0},
+            "alert_to_next_hop_gap_ms": {"mean": 20.0, "std": 3.0},
+        },
+        "load_test": {
+            "decision_latency_ms": {
+                speed: {"p50": 1.0, "p95": 2.0, "p99": 3.0}
+                for speed in ("1x", "5x", "10x")
+            }
+        },
+        "ablation": {
+            name: {"recall_at_1pct_fpr": {"mean": 0.6, "std": 0.1}}
+            for name in ("raw_only", "raw_plus_compression", "compression_only")
+        },
+    }
+
+    summary = _render_readme_results(document)
+
+    assert "Cascade recall at 1% FPR: 80.00 ± 10.00%" in summary
+    assert "Slow-drip zero-day recall (Model 1 alone)" in summary
+    assert "Value still stoppable" in summary
+    assert all(f"at {speed}:" in summary for speed in ("1x", "5x", "10x"))
+    assert "Compression-only ablation recall" in summary
+    assert "results.json" in summary
+
+
+def test_readme_snapshot_does_not_claim_dfltcc_from_the_cpu_flag_alone():
+    summary = _render_readme_results(
+        {
+            "meta": {"host": {"arch": "s390x"}, "seeds": [0]},
+            "zlib_bench": {
+                "dflt_flag": True,
+                "zlib_dfltcc_support": False,
+                "hw_toggle_env": None,
+                "hardware_acceleration_claimable": False,
+                "rows": [
+                    {"buffer_bytes": 1024, "hw_on_us": None, "hw_off_us": None, "baseline_us": 4.0}
+                ],
+            },
+        }
+    )
+
+    assert "DFLTCC acceleration: not verified" in summary
+    assert "host flag: present" in summary

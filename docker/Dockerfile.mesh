@@ -3,8 +3,10 @@
    RUN apt-get update && apt-get install -y --no-install-recommends \
          python3 python3-flask python3-requests python3-numpy python3-scipy python3-sklearn \
        && rm -rf /var/lib/apt/lists/*
+   RUN python3 -c "import numpy, scipy, sklearn, flask, requests"
    WORKDIR /app
    COPY audit ./audit
    COPY contracts ./contracts
    COPY mesh ./mesh
-CMD ["python3", "-m", "mesh.service"]
+COPY runtime ./runtime
+   CMD ["python3", "-m", "mesh.service"]

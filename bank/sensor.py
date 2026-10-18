@@ -7,10 +7,11 @@ contains only the frozen bank-to-mesh contract fields.
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 import hashlib
 import hmac
 import math
+import os
 from pathlib import Path
 import time
 import unicodedata
@@ -46,6 +47,22 @@ _CHANNELS = frozenset(("APP", "WEB", "API"))
 _WINDOW_SIZE = 32
 _HISTORY_MS = 60_000
 _FIRST_GAP_MS = 60_000
+
+
+def compression_profile() -> dict[str, str | int | None]:
+    """Describe zlib settings that affect the sensor's compression features.
+
+    Prepared models are invalidated when this profile changes so training and
+    inference use the same compression behavior.
+    """
+    return {
+        "algorithm": "zlib",
+        "level": 6,
+        "zlib_compile_version": zlib.ZLIB_VERSION,
+        "zlib_runtime_version": zlib.ZLIB_RUNTIME_VERSION,
+        "dfltcc": os.environ.get("DFLTCC"),
+        "dfltcc_level_mask": os.environ.get("DFLTCC_LEVEL_MASK"),
+    }
 
 # These are lower-bound thresholds: a value exactly on a threshold enters
 # that bucket. Values above the final threshold stay in the final bucket.
@@ -107,6 +124,24 @@ def _normalized_compression_distance(window: bytes, reference: bytes) -> float:
     return min(1.0, max(0.0, distance))
 
 
+def _compression_features(
+    window: bytes,
+    reference: bytes,
+    reference_compressed_size: int,
+) -> tuple[float, float]:
+    """Return level-six NCD and compression ratio with one window compression."""
+    window_size = _compressed_size(window)
+    ratio = window_size / max(len(window), 1)
+    if not window or not reference:
+        return 0.0, ratio
+    denominator = max(window_size, reference_compressed_size)
+    if denominator == 0:
+        return 0.0, ratio
+    joined_size = _compressed_size(window + b"\n" + reference)
+    distance = (joined_size - min(window_size, reference_compressed_size)) / denominator
+    return min(1.0, max(0.0, distance)), ratio
+
+
 def _default_reference_window() -> bytes:
     return Path(__file__).with_name("reference_window.txt").read_bytes()
 
@@ -135,21 +170,26 @@ class BlindSensor:
         self._key = key
         self.bank = bank
         self._reference = ref_window
+        self._reference_compressed_size = _compressed_size(ref_window)
         if not ref_window.strip():
             raise ValueError("reference window must contain non-whitespace bytes")
         self._sequence = 0
         self._last_timestamp: dict[str, int] = {}
         self._history: dict[str, deque[tuple[int, str]]] = defaultdict(deque)
+        self._history_dest_counts: dict[str, Counter[str]] = defaultdict(Counter)
         self._windows: dict[str, deque[str]] = defaultdict(
             lambda: deque(maxlen=_WINDOW_SIZE)
         )
+        self._window_buffers: dict[str, bytearray] = defaultdict(bytearray)
 
     def reset(self) -> None:
         """Clear bank-local rolling state for the synthetic demo reset."""
         self._sequence = 0
         self._last_timestamp.clear()
         self._history.clear()
+        self._history_dest_counts.clear()
         self._windows.clear()
+        self._window_buffers.clear()
 
     def process(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         """Consume one raw event and return exactly the bank-to-mesh fields."""
@@ -188,16 +228,32 @@ class BlindSensor:
         dst_bid = bid_for(dst_account, self._key)
 
         history = self._history[src_account]
+        destination_counts = self._history_dest_counts[src_account]
         cutoff = ts_ms - _HISTORY_MS
-        recent = [item for item in history if cutoff <= item[0] <= ts_ms]
-        history.clear()
-        history.extend(recent)
+        if history and ts_ms < history[-1][0]:
+            # Keep out-of-order inputs correct; the common in-order path below
+            # only removes expired events from the left side of the deque.
+            recent = sorted(
+                (item for item in history if cutoff <= item[0] <= ts_ms),
+                key=lambda item: item[0],
+            )
+            history.clear()
+            history.extend(recent)
+            destination_counts.clear()
+            destination_counts.update(destination for _, destination in recent)
+        else:
+            while history and history[0][0] < cutoff:
+                _expired_ts, expired_destination = history.popleft()
+                destination_counts[expired_destination] -= 1
+                if destination_counts[expired_destination] == 0:
+                    del destination_counts[expired_destination]
         previous_ts = self._last_timestamp.get(src_account)
         gap_ms = _FIRST_GAP_MS if previous_ts is None else max(0, ts_ms - previous_ts)
         history.append((ts_ms, dst_account))
+        destination_counts[dst_account] += 1
         self._last_timestamp[src_account] = ts_ms
         tx_count_60s = len(history)
-        distinct_dest_60s = len({dest for _, dest in history})
+        distinct_dest_60s = len(destination_counts)
 
         # Keep the text window scoped to one source account. Its rows contain
         # only the frozen coarse representation, never raw IDs or full bids.
@@ -205,8 +261,18 @@ class BlindSensor:
         abort_bin = _bucket_index(aborts, ABORT_BIN_BOUNDARIES)
         window_record = f"{tx_type}|{amt_bin:.2f}|{gap_bin}|{abort_bin}|{dst_bid[:6]}\n"
         window = self._windows[src_account]
+        window_buffer = self._window_buffers[src_account]
+        if len(window) == _WINDOW_SIZE:
+            evicted = window.popleft().encode("utf-8")
+            del window_buffer[: len(evicted)]
         window.append(window_record)
-        window_bytes = "".join(window).encode("utf-8")
+        window_buffer.extend(window_record.encode("utf-8"))
+        window_bytes = bytes(window_buffer)
+        window_ncd, compression_ratio = _compression_features(
+            window_bytes,
+            self._reference,
+            self._reference_compressed_size,
+        )
 
         feature_values = [
             float(amt_bin),
@@ -214,8 +280,8 @@ class BlindSensor:
             float(aborts),
             float(tx_count_60s),
             float(distinct_dest_60s),
-            float(_normalized_compression_distance(window_bytes, self._reference)),
-            float(_compressed_size(window_bytes) / max(len(window_bytes), 1)),
+            float(window_ncd),
+            float(compression_ratio),
             float(_entropy(window_bytes)),
         ]
         self._sequence += 1

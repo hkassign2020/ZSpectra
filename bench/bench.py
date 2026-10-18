@@ -55,6 +55,104 @@ def _summary(values: Iterable[float]) -> dict[str, Any]:
     }
 
 
+def _render_readme_results(document: dict[str, Any]) -> str:
+    """Create the short README snapshot directly from an evaluation result."""
+    meta = document.get("meta", {})
+    host = meta.get("host", {})
+    seeds = ", ".join(str(seed) for seed in meta.get("seeds", [])) or "not recorded"
+    lines = [f"- Evaluation host: `{host.get('arch', 'unknown')}`; seeds: {seeds}."]
+
+    def add_summary(label: str, metrics: dict[str, Any] | None, scale: float = 1.0, unit: str = "") -> None:
+        if not isinstance(metrics, dict) or not isinstance(metrics.get("mean"), (int, float)):
+            return
+        mean = float(metrics["mean"]) * scale
+        std = float(metrics.get("std", 0.0)) * scale
+        lines.append(f"- {label}: {mean:,.2f} ± {std:,.2f}{unit}.")
+
+    detection = document.get("detection", {})
+    add_summary("Cascade recall at 1% FPR", detection.get("recall_at_1pct_fpr"), 100.0, "%")
+    add_summary("Alert precision", detection.get("alert_precision"), 100.0, "%")
+    add_summary("Cascades flagged at hop 2", detection.get("cascades_flagged_at_hop2_pct"), 1.0, "%")
+    add_summary(
+        "Slow-drip zero-day recall (Model 1 alone)",
+        detection.get("zero_day_slow_drip_recall_at_1pct_fpr"),
+        100.0,
+        "%",
+    )
+    add_summary("Value still stoppable", detection.get("value_still_stoppable_pct"), 1.0, "%")
+    add_summary("Time to flag from hop 1", detection.get("time_to_flag_ms"), 1.0, " ms")
+    add_summary("Alert-to-next-hop gap", detection.get("alert_to_next_hop_gap_ms"), 1.0, " ms")
+
+    load_test = document.get("load_test", {})
+    for speed in ("1x", "5x", "10x"):
+        distribution = load_test.get("decision_latency_ms", {}).get(speed)
+        if isinstance(distribution, dict):
+            lines.append(
+                f"- Decision latency at {speed}: p50 {float(distribution['p50']):,.3f} ms, "
+                f"p95 {float(distribution['p95']):,.3f} ms, p99 {float(distribution['p99']):,.3f} ms."
+            )
+        end_to_end = load_test.get("end_to_end_ms", {}).get(speed)
+        if isinstance(end_to_end, dict):
+            lines.append(
+                f"- Hold-delivery latency at {speed}: p50 {float(end_to_end['p50']):,.3f} ms, "
+                f"p95 {float(end_to_end['p95']):,.3f} ms, p99 {float(end_to_end['p99']):,.3f} ms."
+            )
+
+    for name, label in (
+        ("raw_only", "Raw-only ablation recall"),
+        ("raw_plus_compression", "Raw + compression ablation recall"),
+        ("compression_only", "Compression-only ablation recall"),
+    ):
+        metric = document.get("ablation", {}).get(name, {}).get("recall_at_1pct_fpr")
+        add_summary(label, metric, 100.0, "%")
+
+    zlib = document.get("zlib_bench", {})
+    if isinstance(zlib, dict):
+        claim = zlib.get("hardware_acceleration_claimable") is True
+        flag = "present" if zlib.get("dflt_flag") is True else "not observed"
+        support = zlib.get("zlib_dfltcc_support")
+        support_label = "yes" if support is True else "no" if support is False else "unknown"
+        lines.append(
+            f"- DFLTCC acceleration: {'verified by the configured comparison' if claim else 'not verified'} "
+            f"(host flag: {flag}; zlib support: {support_label})."
+        )
+        lines.append(
+            "- DFLTCC configured for the application runtime: "
+            f"{'yes' if zlib.get('application_runtime_enabled') is True else 'no'} "
+            f"(level mask: {zlib.get('application_runtime_level_mask') or 'not set'})."
+        )
+        for row in zlib.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            size = row.get("buffer_bytes")
+            on_us = row.get("hw_on_us")
+            off_us = row.get("hw_off_us")
+            baseline_us = row.get("baseline_us")
+            if isinstance(on_us, (int, float)) and isinstance(off_us, (int, float)):
+                lines.append(
+                    f"- zlib level-six {size} byte toggle: on {on_us:,.2f} µs; off {off_us:,.2f} µs."
+                )
+            elif isinstance(baseline_us, (int, float)):
+                lines.append(f"- zlib level-six {size} byte baseline: {baseline_us:,.2f} µs.")
+
+    lines.append("All values above are copied from the accompanying `results.json`.")
+    return "\n".join(lines)
+
+
+def _update_readme_results(document: dict[str, Any], results_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    if results_path.resolve() != root / "results.json":
+        return
+    readme_path = root / "README.md"
+    contents = readme_path.read_text(encoding="utf-8")
+    start_marker = "<!-- EVAL-SUMMARY-START -->"
+    end_marker = "<!-- EVAL-SUMMARY-END -->"
+    start = contents.index(start_marker) + len(start_marker)
+    end = contents.index(end_marker, start)
+    updated = contents[:start] + "\n" + _render_readme_results(document) + "\n" + contents[end:]
+    readme_path.write_text(updated, encoding="utf-8")
+
+
 def _validation_chains(split_b: list[dict[str, Any]]) -> set[str]:
     first_seen: dict[str, int] = {}
     for row in split_b:
@@ -388,6 +486,12 @@ def evaluate(
         os.environ.get("REPLAY_TOKEN", ""),
     )
     zlib_results = run_zlib_bench()
+    zlib_results["application_runtime_enabled"] = os.environ.get("DFLTCC") == "1"
+    zlib_results["application_runtime_level_mask"] = (
+        os.environ.get("DFLTCC_LEVEL_MASK")
+        if zlib_results["application_runtime_enabled"]
+        else None
+    )
     meta = _host_metadata()
     meta["seeds"] = list(seeds)
     detection = {
@@ -416,10 +520,11 @@ def evaluate(
         "audit": audit,
         "limitations": [
             "Synthetic data does not represent production banking traffic.",
-            "The generated features and labels are near-separable by construction; a near-perfect score would indicate an easy synthetic task, not production detection capability.",
+            "Generated scenario labels and features come from an authored synthetic process; measured recall is benchmark-specific and does not establish production detection capability.",
             "Pseudonymization supports linkability; BIDs remain pseudonymous.",
             "Latency measurements use one host and are not a multi-region service-level result.",
             "A consortium key makes BIDs linkable by design.",
+            "The digest-only canary scanner detects complete exact tokens; partial or altered canary text may not be detected.",
         ],
     }
     target = Path(output_path)
@@ -427,6 +532,7 @@ def evaluate(
     temp_path = target.with_suffix(target.suffix + ".tmp")
     temp_path.write_text(json.dumps(result_document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(target)
+    _update_readme_results(result_document, target)
     return result_document
 
 

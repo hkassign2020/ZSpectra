@@ -8,7 +8,7 @@ import pickle
 from pathlib import Path
 from typing import Any, Iterable
 
-from bank.sensor import BlindSensor
+from bank.sensor import BlindSensor, compression_profile
 from gen.generator import GeneratorConfig, generate
 from mesh.chain import ChainLinker
 from mesh.features import mesh_feature_vector
@@ -127,6 +127,8 @@ def train_and_save(
     model.save_thresholds(target / "thresholds.json")
     metadata = {
         "seed": seed,
+        "event_count": len(raw_events),
+        "compression_profile": compression_profile(),
         "split_rows": {name: len(value) for name, value in splits.items()},
         "classifier_training_rows": len(classifier_rows),
         "validation_rows": len(validation_rows),

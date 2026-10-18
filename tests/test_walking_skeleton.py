@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 pytest.importorskip("numpy")
@@ -66,35 +64,34 @@ def test_two_hop_walking_skeleton_emits_hold_to_local_bank(monkeypatch, tmp_path
         "B": [{"account": "B:DEMO_RELAY", "customer_name": "Synthetic Relay"}],
         "C": [{"account": "C:DEMO_RECEIVER", "customer_name": "Synthetic Receiver"}],
     }
+
+    mesh_client_holder = {}
+
+    class BankMeshSession:
+        def post(self, url, *, json, timeout):
+            return ClientResponse(mesh_client_holder["client"].post("/ingest", json=json))
+
     bank_apps = {
-        bank: create_bank_app(bank, key, "http://mesh:8000", local_accounts[bank])
+        bank: create_bank_app(
+            bank,
+            key,
+            "http://mesh:8000",
+            local_accounts[bank],
+            http_session_factory=BankMeshSession,
+        )
         for bank in ("A", "B", "C")
     }
     bank_clients = {bank: app.test_client() for bank, app in bank_apps.items()}
-    mesh_client_holder = {}
 
-    def bank_to_mesh(url, *, json, timeout):
-        return ClientResponse(mesh_client_holder["client"].post("/ingest", json=json))
+    class MeshBankSession:
+        def post(self, url, *, json, timeout):
+            bank = url.split("bank-")[1].split(":", 1)[0].upper()
+            return ClientResponse(bank_clients[bank].post("/hold", json=json))
 
-    # Keep each service's requests adapter separate while preserving its exception type.
-    import bank.service as bank_service
-    import mesh.service as mesh_service
-    import requests
-
-    monkeypatch.setattr(bank_service, "requests", SimpleNamespace(post=bank_to_mesh, RequestException=requests.RequestException))
-
-    def mesh_to_bank(url, *, json, timeout):
-        bank = url.split("bank-")[1].split(":", 1)[0].upper()
-        return ClientResponse(bank_clients[bank].post("/hold", json=json))
-
-    monkeypatch.setattr(
-        mesh_service,
-        "requests",
-        SimpleNamespace(post=mesh_to_bank, RequestException=requests.RequestException),
-    )
     mesh_app = create_mesh_app(
         trained["model"],
         bank_urls={bank: f"http://bank-{bank}:800{index + 1}" for index, bank in enumerate(("A", "B", "C"))},
+        http_session_factory=MeshBankSession,
     )
     mesh_client_holder["client"] = mesh_app.test_client()
 

@@ -264,6 +264,26 @@ function drawResultSummary(results) {
   ]) {
     card(label, [summaryLine(ablations[name]?.recall_at_1pct_fpr, 100, "% recall mean ± std over seeds")]);
   }
+
+  const zlib = results.zlib_bench || {};
+  if (typeof zlib.runtime_version === "string") {
+    const support = zlib.zlib_dfltcc_support === true
+      ? "supported"
+      : zlib.zlib_dfltcc_support === false ? "not found in loaded zlib" : "unknown";
+    const lines = [
+      `Architecture ${zlib.platform_architecture || "unknown"} · zlib ${zlib.runtime_version}`,
+      `DFLTCC acceleration ${zlib.hardware_acceleration_claimable === true ? "verified by the configured comparison" : "not verified"} · CPU flag ${zlib.dflt_flag === true ? "present" : "not observed"} · zlib ${support}`,
+      `Application runtime DFLTCC ${zlib.application_runtime_enabled === true ? "enabled" : "disabled"} · level mask ${zlib.application_runtime_level_mask || "not set"}`,
+    ];
+    for (const row of zlib.rows || []) {
+      if (typeof row.hw_on_us === "number" && typeof row.hw_off_us === "number") {
+        lines.push(`${formatNumber(row.buffer_bytes)} byte level-six compression · on ${formatNumber(row.hw_on_us)} µs · off ${formatNumber(row.hw_off_us)} µs`);
+      } else if (typeof row.baseline_us === "number") {
+        lines.push(`${formatNumber(row.buffer_bytes)} byte level-six baseline · ${formatNumber(row.baseline_us)} µs`);
+      }
+    }
+    card("LinuxONE zlib / DFLTCC", lines);
+  }
 }
 
 async function postControl(path, statusNode, pending, done) {

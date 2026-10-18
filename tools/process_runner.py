@@ -77,6 +77,7 @@ def _services() -> list[tuple[str, str, int, dict[str, str]]]:
                 "PORT": str(port),
                 "ACCOUNTS_FILE": str(ROOT / "demo-data" / "accounts" / f"accounts-{bank}.json"),
                 "CANARY_INDEX_FILE": str(ROOT / "demo-data" / "canary-index.json"),
+                "TRAINING_METADATA_FILE": str(ROOT / "models" / "training.json"),
             }
         )
         if os.environ.get("OPERATOR_TOKEN"):

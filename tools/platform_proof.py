@@ -8,6 +8,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+import argparse
 
 
 def _read_text(path: str) -> str:
@@ -29,6 +30,33 @@ def _run(command: list[str]) -> dict[str, object]:
         "returncode": result.returncode,
         "output": (result.stdout + result.stderr).strip(),
     }
+
+
+def _zlib_dfltcc_support() -> bool | None:
+    """Inspect the loaded user-space zlib for IBM's documented marker."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        import zlib
+
+        zlib.compress(b"zspectra-dfltcc-probe", level=1)
+        maps = Path("/proc/self/maps").read_text(encoding="utf-8", errors="replace")
+    except (OSError, ImportError):
+        return None
+    libraries = {
+        line.split()[-1]
+        for line in maps.splitlines()
+        if "/" in line and "libz.so" in line.split()[-1]
+    }
+    if not libraries:
+        return None
+    for library in libraries:
+        try:
+            if b"DFLTCC" in Path(library).read_bytes():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def collect() -> dict[str, object]:
@@ -58,6 +86,7 @@ def collect() -> dict[str, object]:
             "byte_order": sys.byteorder,
             "model_name": platform.processor() or platform.uname().machine,
             "dflt_flag": any("dflt" in line.lower() for line in feature_lines),
+            "zlib_dfltcc_support": _zlib_dfltcc_support(),
             "cpu_features": feature_lines,
             "sysinfo": [
                 line.strip()
@@ -75,8 +104,30 @@ def collect() -> dict[str, object]:
     }
 
 
+def dfltcc_ready(evidence: dict[str, object]) -> bool:
+    """Require s390x, the CPU feature, and DFLTCC-capable loaded libz."""
+    host = evidence.get("host", {})
+    if not isinstance(host, dict):
+        return False
+    return (
+        host.get("architecture") == "s390x"
+        and host.get("dflt_flag") is True
+        and host.get("zlib_dfltcc_support") is True
+    )
+
+
 def main() -> int:
-    print(json.dumps(collect(), indent=2, sort_keys=True))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--require-dfltcc",
+        action="store_true",
+        help="fail unless the host has s390x, the dflt CPU flag, and DFLTCC-capable libz",
+    )
+    args = parser.parse_args()
+    evidence = collect()
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+    if args.require_dfltcc:
+        return 0 if dfltcc_ready(evidence) else 2
     return 0 if platform.system() == "Linux" else 2
 
 

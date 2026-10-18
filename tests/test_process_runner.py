@@ -14,6 +14,7 @@ def test_process_mode_keeps_the_consortium_key_only_in_bank_environments(monkeyp
     assert services["bank-A"]["CONSORTIUM_KEY"] == "test-consortium-key"
     assert services["bank-B"]["CONSORTIUM_KEY"] == "test-consortium-key"
     assert services["bank-C"]["CONSORTIUM_KEY"] == "test-consortium-key"
+    assert services["bank-A"]["TRAINING_METADATA_FILE"].endswith("training.json")
     assert all("CONSORTIUM_KEY" not in services[name] for name in ("replayer", "dashboard"))
     assert services["mesh"]["LLM_API_KEY"] == "test-llm-key"
     assert services["mesh"]["LLM_URL"] == "http://llm-host:8082/v1/chat/completions"

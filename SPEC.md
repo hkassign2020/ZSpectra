@@ -20,7 +20,7 @@ Save this file in the repo as `SPEC.md`. It is the single source of truth. Every
 
 ## 1. The idea in one paragraph
 
-Cross-bank mule rings move stolen money through three banks in seconds, and banks cannot share raw customer data because of privacy law and banking secrecy, so no single bank sees the whole cascade. Z-SPECTRA v2 keeps every raw event inside its own bank's sealed container. Inside that container, a "blind sensor" converts each event into keyed-pseudonymous behavioral features (timing, rollback counts, amount bins, and compression and entropy features over a sliding window). Only allowlisted fields cross a checked boundary into a shared mesh that holds no key and no plaintext. The mesh links the same pseudonymous account across banks into a chain, scores it with an anomaly model and a classifier, and flags the cascade at hop 2, before money is cashed out at hop 3. An LLM then writes a forensic brief from blind inputs only. The mesh sends a hold recommendation, and the owning bank's operator approves it. A live audit with planted fake PII ("canaries") and a deliberate negative control proves what did and did not cross the boundary. Everything runs on IBM LinuxONE (s390x) in containers.
+Cross-bank mule rings move stolen money through three banks in seconds, and banks cannot share raw customer data because of privacy law and banking secrecy, so no single bank sees the whole cascade. Z-SPECTRA v2 keeps every raw event inside its own bank's sealed container. Inside that container, a "blind sensor" converts each event into keyed-pseudonymous behavioral features (timing, rollback counts, amount bins, and compression and entropy features over a sliding window). Only allowlisted fields cross a checked boundary into a shared mesh that holds no key and no plaintext. The mesh links the same pseudonymous account across banks into a chain, scores it with an anomaly model and a classifier, and flags the cascade at hop 2, before money is cashed out at hop 3. An LLM then writes a forensic brief from blind inputs only. The mesh sends a hold recommendation to all banks; only the bank that owns the BID acts on it, and its operator approves the hold. A live audit with planted fake PII ("canaries") and a deliberate negative control checks the boundary. The target platform is IBM LinuxONE (s390x). Docker provides the preferred service isolation; `run.sh` also supports a documented process-mode fallback when Docker is unavailable.
 
 ---
 
@@ -66,12 +66,13 @@ Honest limits we state in the final deliverables:
 - Sensors read plaintext. The protection is the sealed container plus the boundary, not "AI never sees plaintext".
 - Data is synthetic. Latency is measured on the same host.
 - Only the owning bank can map a blind ID back to a customer.
+- The digest-only canary scanner detects exact complete canary tokens; partial, altered, misspelled, or differently encoded variants may not be detected.
 
 ---
 
 ## 5. System architecture
 
-Services (all containers on one LinuxONE VM, one user-defined Docker network `zs-net`):
+Services (Docker mode on one LinuxONE VM, one user-defined Docker network `zs-net`; process mode is the documented fallback when Docker is unavailable):
 
 | Service | Port | Holds key? | Role |
 |---|---|---|---|
@@ -180,7 +181,7 @@ Signature: `generate(config, seed) -> (raw_events, ground_truth, accounts_by_ban
   - HARD_NEG_FAMILY_RELAY: legit multi-bank hops with hour-long gaps.
   - HARD_NEG_MERCHANT_BURST: many small payments to one destination in seconds.
   - HARD_NEG_QUICK_RELAY: legit fast two-hop relay (escrow or exchange style) with overlapping timing and carry-over.
-- Difficulty knobs in `GenConfig` (noise, overlap between cascade and quick-relay timings). Tune so the classifier is good but NOT perfect (target recall at 1% FPR around 0.80 to 0.95 on cascades). A result near 100% means the data is too easy and must be made harder.
+- The current generator emits three cascade transfers (A to B, B to C, then C to external cash-out), with API channels, 1 to 30 second hop gaps, and 0.91 to 0.99 amount carry-over. Quick-relay hard negatives have a separate two-hop profile. The target recall at 1% FPR is 0.80 to 0.95; this is an acceptance target, not a claimed result. Use `results.json` to report the measured outcome. If recall is outside the target, treat that as unresolved model/data work; do not alter labels or thresholds to force a target score.
 - About 2% label noise in the ground-truth file.
 - Plant canaries: `customer_name`, `national_id` and `memo` always hold fake PII, and some memos contain extra tokens like `CANARY_MEMO_xxxxxx`. The returned `canary_list` contains every fake name, national id, memo token and raw account string.
 - Also output `accounts_by_bank`: for each bank, a list of `{account, customer_name}` (synthetic KYC), used only inside that bank container.
@@ -217,7 +218,7 @@ Two layers.
 
 Layer 1, in-path validator (`audit/validator.py`): `validate(channel, msg)` raises `BoundaryViolation` on any key not in the channel's allowlist, wrong type, out-of-range number, string over 32 characters, `BID_` pattern mismatch, or wrong feature-list length. Every outbound send (bank to mesh, mesh to LLM, mesh to bank) must call it. No send path may bypass it.
 
-Layer 2, canary scanner (`audit/scanner.py`): `CanaryScanner(canary_list).scan(channel, text) -> hits`. Scans every message received by the mesh, every log line (via a logging handler) in banks and mesh, and every LLM prompt and response. The canary list is a test instrument supplied by the harness (file mounted into the mesh container) and is never used for decisions.
+Layer 2, canary scanner (`audit/scanner.py`): `CanaryScanner(canary_list).scan(channel, text) -> hits`. Scans every message received by the mesh, every log line (via a logging handler) in banks and mesh, and every LLM prompt and response. The harness writes a digest-only index from its canary list and mounts that index into the mesh; raw canary strings are not mounted there and the index is never used for decisions. The scanner matches complete, exact canary tokens. Partial, altered, misspelled, or differently encoded variants can pass undetected and are an explicit audit limitation.
 
 Counters (real, never hardcoded): production messages scanned, bytes scanned, canary hits, messages blocked by the validator. Negative-control scans and hits are kept in separate self-test counters and do not increment production canary-hit status.
 
@@ -302,8 +303,9 @@ Flask plus plain HTML and JavaScript. No build step, no Streamlit. Panels:
   - `grep -m1 features /proc/cpuinfo` (look for `dflt`)
   - `grep -E 'Manufacturer|Type|LPAR|VM00' /proc/sysinfo`
   - `docker ps`
-- Hardware compression claim rule: only claim DFLTCC use if (a) the `dflt` flag is present AND (b) the benchmark shows a measurable difference with the hardware toggle on versus off. Otherwise say only that the flag is present, or say nothing. The toggle mechanism (an environment variable the installed zlib documents) is a config value `HW_TOGGLE_ENV` filled in after checking, not assumed.
-- `bench/zlib_bench.py` compresses buffers of 1 KB, 16 KB, 256 KB, 4 MB and 64 MB at level 6, with the toggle on and off, and records microseconds per call and `zlib.ZLIB_RUNTIME_VERSION`.
+- DFLTCC is opt-in (`ZSPECTRA_DFLTCC=1`) and disabled by default. The runner requires s390x, the `dflt` CPU flag, and a DFLTCC-capable loaded zlib; each bank container checks its own loaded zlib again. The default supported setting is `DFLTCC=1` with `DFLTCC_LEVEL_MASK=0x007e`. Do not claim the application used DFLTCC unless its runtime setting is recorded, and do not claim acceleration unless the isolated benchmark comparison also shows a measurable difference.
+- `bench/zlib_bench.py` compresses buffers of 1 KB, 16 KB, 256 KB, 4 MB and 64 MB at level 6 in fresh interpreters. It records `zlib.ZLIB_RUNTIME_VERSION`, the CPU flag, loaded zlib support, whether a toggle was configured, and either on/off timings or an explicitly labeled baseline.
+- `models/training.json` records event count, seed, and the zlib/DFLTCC profile. `run.sh` regenerates the model when any of those settings change.
 - Containers must show isolation: `docker exec mesh env` and `docker exec dash env` must not contain the consortium key. There is a test for this.
 
 ---
@@ -334,9 +336,10 @@ ablation: raw_only | raw_plus_compression | compression_only   each with recall_
   - raw features = log_amount_bin, log1p_gap_ms, aborts_5s, tx_count_60s, distinct_dest_60s
   - compression features = window_ncd, compression_ratio, window_entropy
   - the 5 mesh features are included in all three configurations
-zlib_bench: {runtime_version, dflt_flag, hw_toggle_env, rows: [{buffer_bytes, hw_on_us, hw_off_us}]}
+zlib_bench: {runtime_version, platform_architecture, dflt_flag, zlib_dfltcc_support, hw_toggle_env, hw_toggle_on, hw_toggle_off, benchmark_dfltcc_level_mask, toggle_configured, toggle_isolation, hardware_acceleration_claimable, application_runtime_enabled, application_runtime_level_mask, rows: [{buffer_bytes, hw_on_us, hw_off_us, baseline_us}]}
 audit: {messages_scanned, bytes_scanned, canary_hits_real_run, validator_blocks, negative_control_caught}
 limitations: list of strings (synthetic data, pseudonymization only, same-host latency, shared key linkability)
+  Include the exact-token limitation of the digest-only canary scanner.
 ```
 
 Report whatever the ablation shows. If compression adds nothing, `results.json` must say so and the README must say so.
@@ -383,8 +386,8 @@ Everything below runs with `pytest -q` and must pass on both a laptop and the VM
 - S2 Generator: same seed gives identical output; raw events contain no label fields; canaries appear only in raw events and the canary list; slow-drip appears only in the test split; cascades have the specified hop structure.
 - S3 Sensor: same input and key give the same blind ID; a different key gives a different ID; `dst_bid` from bank A equals `src_bid` from bank B for the same canonical account; output has only allowlisted fields; 8 features in the right order; feature values are finite.
 - S4 Audit: validator rejects an extra key, a long string, and a bad `BID_` pattern; scanner finds a planted canary; negative control is caught; counters are computed, not constants.
-- S5 Containers: three banks and the mesh start from `run.sh start`; `/health` is green; the mesh and dash containers contain no key; `run.sh reset` returns a clean state.
-- S6 Mesh and models: links a two-hop chain across banks within the time tolerance; handles clock skew; thresholds are loaded from `thresholds.json`; the scripted heist raises one alert at hop 2; the hold recommendation reaches the owning bank only.
+- S5 Runtime: in Docker mode, three banks and the mesh start from `run.sh start`, `/health` is green, and mesh/dash containers contain no key; in process mode, services bind to loopback and bank-only key placement is checked, with the documented same-OS-account isolation limit; `run.sh reset` returns a clean state.
+- S6 Mesh and models: links a two-hop chain across banks within the time tolerance; handles clock skew; thresholds are loaded from `thresholds.json`; the scripted heist raises one alert at hop 2; the hold recommendation is broadcast to all banks and only the owner acts on it.
 - S7 LLM: prompt validates against the contract; `llm_mode` is always set; the template fallback is labeled.
 - S8 Dashboard: every panel loads; benchmark numbers come from `results.json`; the negative-control button shows "caught".
 - S9 Evaluation: `results.json` is produced and matches the schema; the clean-clone run reproduces the numbers within the reported spread.
@@ -399,7 +402,7 @@ Order: contracts and repo (S1), platform proof (S0), then generator, sensor and 
 
 Fallbacks:
 - No Docker or Podman: use process mode with separate service environments and loopback ports. The demo runs under the invoking OS account, so this fallback is not equivalent to container or separate-user isolation.
-- zlib hardware toggle is unset: do not claim DFLTCC use. Report the host flag and measured zlib results only when results exist; `hw_on_us` remains unavailable until a documented toggle is configured.
+- DFLTCC is opt-in and disabled by default. Without a configured comparison, report only the baseline and leave `hw_on_us`/`hw_off_us` unavailable. The environment toggle must be documented for the loaded zlib, and application use must be distinguished from benchmark-only use.
 - Compression adds no lift: lead with the privacy boundary and audit, and report the result honestly.
 - Snap ML will not import: use scikit-learn HistGradientBoosting.
 - No LLM on the VM: lab 2 method, then a compatible API call with the blind payload only, then a labeled template.
@@ -407,11 +410,8 @@ Fallbacks:
 
 ---
 
-## 14. Open items to verify on the VM (do not assume)
+## 14. Deployment evidence
 
-1. Is the `dflt` flag present, and what environment variable toggles the hardware path in the installed zlib?
-2. Do `pip install numpy scikit-learn flask requests` work on the VM? If not, which distro packages provide them?
-3. Does a scikit-learn model saved on x86 load correctly on s390x? (Default plan: train on the VM.)
-4. How much RAM does the VM have, and is a local LLM feasible?
-5. Which dashboard port is reachable from outside? If none, use an SSH tunnel.
-6. Which LLM path does the LinuxONE lab 2 use?
+Environment-specific facts come from the host where the evaluation runs, not from assumptions in this brief. `tools/linuxone_preflight.py` checks Python imports and Docker CLI/daemon availability; `tools/platform_proof.py` records architecture, byte order, CPU flags, and host details. `results.json` records the evaluation host and DFLTCC flag. No DFLTCC acceleration claim is allowed unless the documented hardware toggle is configured and the benchmark measures its effect.
+
+Models are trained on the evaluation host by `tools/prepare_demo.py`; this project does not claim cross-architecture pickle compatibility. In Docker mode, verify that the LLM server listens on an address reachable through `host.docker.internal`. The README documents the listener check and process-mode fallback.

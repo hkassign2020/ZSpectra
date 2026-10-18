@@ -33,8 +33,9 @@ def message(bank, seq, t_ms, src_bid, dst_bid):
     }
 
 
-def test_heist_alerts_at_hop_two_and_recommends_hold_for_received_account(monkeypatch):
+def test_heist_alerts_at_hop_two_and_recommends_hold_for_received_account():
     sent_holds = []
+    session_factories = []
 
     def post(url, json, timeout):
         sent_holds.append((url, json))
@@ -49,10 +50,18 @@ def test_heist_alerts_at_hop_two_and_recommends_hold_for_received_account(monkey
 
         return Response()
 
-    monkeypatch.setattr("mesh.service.requests.post", post)
+    class Session:
+        def post(self, url, *, json, timeout):
+            return post(url, json, timeout)
+
+    def session_factory():
+        session_factories.append(True)
+        return Session()
+
     app = create_app(
         models=DummyModels(),
         bank_urls={bank: f"http://bank-{bank}" for bank in ("A", "B", "C")},
+        http_session_factory=session_factory,
         llm_generator=lambda payload, scanner=None, **kwargs: (
             kwargs["prompt_json"], {"llm_mode": "template"}
         ),
@@ -74,6 +83,7 @@ def test_heist_alerts_at_hop_two_and_recommends_hold_for_received_account(monkey
     assert len(metrics) == 1
     assert metrics[0] >= 0
     assert len(sent_holds) == 3
+    assert len(session_factories) == 1
     assert all(payload["bid"] == "BID_000000000003" for _, payload in sent_holds)
 
 

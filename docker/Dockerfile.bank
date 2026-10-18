@@ -3,7 +3,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements-core.txt ./requirements-core.txt
 RUN python -m pip install --no-cache-dir -r requirements-core.txt
+RUN python -c "import flask, requests"
 COPY audit ./audit
 COPY bank ./bank
 COPY contracts ./contracts
+COPY runtime ./runtime
+COPY tools/platform_proof.py ./tools/platform_proof.py
 CMD ["python", "-m", "bank.service"]

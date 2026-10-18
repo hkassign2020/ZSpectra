@@ -21,6 +21,7 @@ from audit.logging import ScannerLogHandler
 from mesh.chain import ChainLinker
 from mesh.features import mesh_feature_vector
 from mesh.llm import generate_brief, serialize_payload
+from runtime.http_session_pool import HttpSessionPool
 
 
 def _scanner_from_environment() -> CanaryScanner:
@@ -52,6 +53,7 @@ def create_app(
     bank_urls: dict[str, str] | None = None,
     scanner: CanaryScanner | None = None,
     llm_generator: Callable[..., tuple[str, dict[str, Any]]] | None = None,
+    http_session_factory: Callable[[], Any] | None = None,
 ) -> Flask:
     if models is None:
         raise RuntimeError("trained models are required")
@@ -63,6 +65,8 @@ def create_app(
     scanner = scanner or _scanner_from_environment()
     llm_generator = llm_generator or generate_brief
     auditor = Auditor()
+    session_factory = http_session_factory or requests.Session
+    http_sessions = HttpSessionPool(session_factory)
     linker = ChainLinker()
     lock = threading.RLock()
     stream_queues: list[Queue[str]] = []
@@ -89,7 +93,7 @@ def create_app(
     def audited_post(channel: str, url: str, payload: dict[str, Any]) -> requests.Response:
         auditor.check(channel, payload)
         scanner.scan(channel, json.dumps(payload, separators=(",", ":")))
-        return requests.post(url, json=payload, timeout=5)
+        return http_sessions.post(url, json=payload, timeout=5)
 
     def route_hold(target_bid: str, alert_id: str) -> dict[str, str]:
         payload = {"bid": target_bid, "alert_id": alert_id}

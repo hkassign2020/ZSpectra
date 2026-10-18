@@ -1,6 +1,8 @@
 import math
 import unittest
+from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 import zlib
 
 from bank.sensor import (
@@ -169,6 +171,44 @@ class BlindSensorTests(unittest.TestCase):
         self.assertEqual(later["f"][2], 0.0)
         self.assertEqual(later["f"][3], 1.0)
         self.assertEqual(later["f"][4], 1.0)
+
+    def test_rolling_history_counts_match_after_ordered_and_late_events(self):
+        account = "A:000123"
+        destinations = ["A:000124", "A:000125", "A:000124", "A:000126"]
+        timestamps = [1_000, 2_000, 1_500, 70_000]
+        for timestamp, destination in zip(timestamps, destinations):
+            result = self.sensor.process(
+                self.sample(ts_ms=timestamp, src_account=account, dst_account=destination)
+            )
+            recent = [
+                item for item in self.sensor._history[account]
+                if timestamp - 60_000 <= item[0] <= timestamp
+            ]
+            self.assertEqual(self.sensor._history_dest_counts[account], Counter(dest for _, dest in recent))
+            self.assertEqual(result["f"][3], float(len(recent)))
+            self.assertEqual(result["f"][4], float(len({dest for _, dest in recent})))
+
+    def test_compression_features_reuse_the_window_and_cached_reference_sizes(self):
+        sensor = BlindSensor(b"same-key", "A")
+        raw = self.sample()
+        window = (
+            f"TRANSFER|2.00|6|0|{bid_for('A:000124', b'same-key')[:6]}\n"
+        ).encode("utf-8")
+        reference = sensor._reference
+        expected_window_size = len(zlib.compress(window, level=6))
+        expected_reference_size = len(zlib.compress(reference, level=6))
+        expected_joined_size = len(zlib.compress(window + b"\n" + reference, level=6))
+        expected_ncd = (
+            expected_joined_size - min(expected_window_size, expected_reference_size)
+        ) / max(expected_window_size, expected_reference_size)
+
+        original_compress = zlib.compress
+        with patch("bank.sensor.zlib.compress", wraps=original_compress) as compress:
+            result = sensor.process(raw)
+
+        self.assertEqual(compress.call_count, 2)
+        self.assertEqual(result["f"][5], expected_ncd)
+        self.assertEqual(result["f"][6], expected_window_size / len(window))
 
 
 if __name__ == "__main__":
